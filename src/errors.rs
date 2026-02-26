@@ -1,4 +1,5 @@
 use std::fmt;
+use crate::span::Span;
 
 #[derive(Debug)]
 pub struct TconError{
@@ -28,3 +29,31 @@ impl From<std::io::Error> for TconError{
         TconError::msg(format!("I/O error: {}", e))
     }
 }
+
+
+/// A lowering/semantic error with a precise span.
+#[derive(Debug, Clone)]
+pub struct LowerError{
+    pub message: String,
+    pub span: Span,
+}
+
+impl LowerError{
+    pub fn new(message: impl Into<String>, span: Span) -> Self{
+        Self{
+            message: message.into(),
+            span,
+        }
+    }
+}
+
+impl fmt::Display for LowerError{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result{
+        // fallback formatting (diagonistics use LineIndex fro line/col)
+        write!(f, "{} at {}", self.message, self.span)
+    }
+}
+
+impl std::error::Error for LowerError{}
+
+pub type LowerResult<T> = Result<T, LowerError>;
