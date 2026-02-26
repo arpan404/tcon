@@ -3,7 +3,6 @@ use std::fmt;
 /// Span is a byte-rage into the oriignal source string
 /// `start` and `end` are byte offeserts (end is exclusive).
 /// Usually used to map the compile issues in the code.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
