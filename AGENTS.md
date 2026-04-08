@@ -78,14 +78,21 @@ flowchart TD
   - Recomputes deterministic output and compares with on-disk files.
   - Exit `0` when no drift exists.
   - Exit non-zero when any file differs or fails to compile.
+- `tcon diff [--entry <file.tcon>]`
+  - Prints first-difference summaries for files with drift.
+  - Exit `0` when there are no differences.
+  - Exit non-zero when differences exist.
 - `tcon print --entry <file.tcon>`
   - Prints parsed export expressions for debugging parser output.
+- `tcon watch [--entry <file.tcon>]`
+  - Runs an initial build, then rebuilds when `.tcon` entry file mtimes change.
 
-## MVP Scope
+## Implemented Scope
 
-- Output format: JSON only.
+- Output formats: JSON, YAML, ENV.
 - Schema roots: `t.string()`, `t.number()`, `t.boolean()`/`t.bool()`, `t.object({...})`, `t.array(...)`.
 - Supported modifiers: `.default(value)`, `.optional()`, `.min(n)`, `.max(n)`, `.int()`, `.strict()`.
+- Imports: `import { symbol } from "./other.tcon";` with cycle detection and symbol validation.
 
 ## Contributor Workflow
 
@@ -111,8 +118,7 @@ flowchart TD
 
 ## Roadmap
 
-1. MVP JSON pipeline (`build/check/print`).
-2. Improve drift UX with richer diff output.
-3. Add YAML and ENV emitters.
-4. Add watch mode.
-5. Add controlled import support between `.tcon` files.
+1. Improve diff UX beyond first-difference output.
+2. Expand watch mode to track imported dependency files transitively.
+3. Add richer parser diagnostics with line/column snippets.
+4. Extend schema DSL (union/enum/record) while preserving deterministic output.

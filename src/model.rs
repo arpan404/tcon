@@ -40,7 +40,15 @@ pub enum Key {
 
 #[derive(Debug, Clone)]
 pub struct Program {
+    pub imports: Vec<ImportStmt>,
     pub exports: Vec<ExportConst>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportStmt {
+    pub names: Vec<String>,
+    pub from: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

@@ -21,11 +21,6 @@ pub fn evaluate_spec_expr(expr: &Expr, file_name: &str) -> Result<Spec, String> 
 
     let path = path.ok_or_else(|| format!("{file_name}: spec.path is required"))?;
     let format = format.unwrap_or_else(|| "json".to_string());
-    if format != "json" {
-        return Err(format!(
-            "{file_name}: only format=\"json\" is supported in MVP"
-        ));
-    }
     Ok(Spec { path, format, mode })
 }
 

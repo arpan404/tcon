@@ -1,4 +1,4 @@
-use crate::model::{ExportConst, Expr, Key, Program, Span};
+use crate::model::{ExportConst, Expr, ImportStmt, Key, Program, Span};
 use crate::tcon::lexer::{Token, TokenKind};
 
 pub fn parse(tokens: &[Token], file_name: &str) -> Result<Program, String> {
@@ -18,11 +18,53 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn parse_program(&mut self) -> Result<Program, String> {
+        let mut imports = Vec::new();
         let mut exports = Vec::new();
         while !self.eof() {
-            exports.push(self.parse_export_const()?);
+            if self.peek_simple(TokenKind::Import) {
+                imports.push(self.parse_import_stmt()?);
+            } else {
+                exports.push(self.parse_export_const()?);
+            }
         }
-        Ok(Program { exports })
+        Ok(Program { imports, exports })
+    }
+
+    fn parse_import_stmt(&mut self) -> Result<ImportStmt, String> {
+        let start = self.expect_simple(TokenKind::Import)?.span.start;
+        self.expect_simple(TokenKind::LBrace)?;
+        let mut names = Vec::new();
+        loop {
+            let (name, _) = self.expect_ident()?;
+            names.push(name);
+            if self.maybe_simple(TokenKind::Comma).is_some() {
+                continue;
+            }
+            break;
+        }
+        self.expect_simple(TokenKind::RBrace)?;
+        self.expect_simple(TokenKind::From)?;
+        let from_tok = self
+            .next()
+            .ok_or_else(|| self.err("unexpected EOF in import"))?;
+        let from = match from_tok.kind {
+            TokenKind::String(s) => s,
+            _ => {
+                return Err(self.err_at(
+                    from_tok.span.start,
+                    "import source must be a string",
+                ));
+            }
+        };
+        let end = self
+            .maybe_simple(TokenKind::Semi)
+            .map(|t| t.span.end)
+            .unwrap_or(from_tok.span.end);
+        Ok(ImportStmt {
+            names,
+            from,
+            span: Span::new(start, end),
+        })
     }
 
     fn parse_export_const(&mut self) -> Result<ExportConst, String> {

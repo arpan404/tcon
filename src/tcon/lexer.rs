@@ -2,6 +2,8 @@ use crate::model::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
+    Import,
+    From,
     Export,
     Const,
     True,
@@ -165,6 +167,8 @@ pub fn lex(src: &str, file_name: &str) -> Result<Vec<Token>, String> {
                     }
                     let text = &src[start..i];
                     match text {
+                        "import" => TokenKind::Import,
+                        "from" => TokenKind::From,
                         "export" => TokenKind::Export,
                         "const" => TokenKind::Const,
                         "true" => TokenKind::True,
