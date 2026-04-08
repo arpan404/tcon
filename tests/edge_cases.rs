@@ -1616,3 +1616,383 @@ export const config = { name: 42, count: "hello" };
         "error should show expected type and actual type: {stderr}"
     );
 }
+
+// ─── Enterprise features ──────────────────────────────────────────────────────
+
+// --- Multi-error collection ---
+
+#[test]
+fn multi_error_validation_reports_all_fields() {
+    let root = mk_workspace("multi_err");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  host: t.string(),
+  port: t.number().int(),
+  mode: t.enum(["dev", "prod"]),
+}).strict();
+export const config = { host: 123, port: "not-a-number", mode: "staging" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // All three field errors should appear in the same output
+    assert!(
+        stderr.contains("expected string"),
+        "missing host error: {stderr}"
+    );
+    assert!(
+        stderr.contains("expected number"),
+        "missing port error: {stderr}"
+    );
+    assert!(
+        stderr.contains("enum value not in allowed variants"),
+        "missing mode error: {stderr}"
+    );
+}
+
+#[test]
+fn multi_error_summary_line_shows_count() {
+    let root = mk_workspace("multi_err_count");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  a: t.string(),
+  b: t.number(),
+  c: t.boolean(),
+}).strict();
+export const config = { a: 1, b: "two", c: "three" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Summary line should mention the count
+    assert!(
+        stderr.contains("3 error") || stderr.contains("errors"),
+        "expected error count in summary: {stderr}"
+    );
+}
+
+// --- ENV variable interpolation ---
+
+#[test]
+fn env_interpolation_resolves_set_variable() {
+    let root = mk_workspace("env_interp_ok");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ host: t.string() }).strict();
+export const config = { host: "${TCON_TEST_HOST}" };
+"#,
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_tcon"))
+        .args(["build", "--entry", "x.tcon"])
+        .current_dir(&root)
+        .env("TCON_TEST_HOST", "prod.example.com")
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "build failed: {:?}", out);
+    let json = fs::read_to_string(root.join("out.json")).expect("read");
+    assert!(
+        json.contains("prod.example.com"),
+        "interpolated value missing: {json}"
+    );
+}
+
+#[test]
+fn env_interpolation_uses_default_when_var_unset() {
+    let root = mk_workspace("env_interp_default");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ host: t.string() }).strict();
+export const config = { host: "${TCON_ABSENT_VAR_XYZ:fallback.local}" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(out.status.success(), "build failed: {:?}", out);
+    let json = fs::read_to_string(root.join("out.json")).expect("read");
+    assert!(
+        json.contains("fallback.local"),
+        "default value missing: {json}"
+    );
+}
+
+#[test]
+fn env_interpolation_fails_when_var_unset_and_no_default() {
+    let root = mk_workspace("env_interp_missing");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ secret: t.string() }).strict();
+export const config = { secret: "${DEFINITELY_NOT_SET_VAR_12345}" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "should fail when env var is missing");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("DEFINITELY_NOT_SET_VAR_12345"),
+        "missing var name in error: {stderr}"
+    );
+    assert!(
+        stderr.contains("not set") || stderr.contains("unset"),
+        "should say variable is not set: {stderr}"
+    );
+}
+
+#[test]
+fn env_interpolation_in_schema_default() {
+    let root = mk_workspace("env_interp_schema_default");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  region: t.string().default("${TCON_REGION:us-east-1}"),
+}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(out.status.success(), "build failed: {:?}", out);
+    let json = fs::read_to_string(root.join("out.json")).expect("read");
+    assert!(
+        json.contains("us-east-1"),
+        "interpolated default missing: {json}"
+    );
+}
+
+#[test]
+fn env_interpolation_escaped_dollar_brace() {
+    let root = mk_workspace("env_interp_escape");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ template: t.string() }).strict();
+export const config = { template: "$${PLACEHOLDER}" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(out.status.success(), "build failed: {:?}", out);
+    let json = fs::read_to_string(root.join("out.json")).expect("read");
+    assert!(
+        json.contains("${PLACEHOLDER}"),
+        "escaped placeholder should be literal: {json}"
+    );
+}
+
+// --- t.extend() schema composition ---
+
+#[test]
+fn schema_extend_merges_base_fields() {
+    let root = mk_workspace("schema_extend");
+    write_file(
+        &root.join(".tcon/base.tcon"),
+        r#"
+export const baseSchema = t.object({
+  host: t.string().default("0.0.0.0"),
+  port: t.number().int().default(8080),
+}).strict();
+"#,
+    );
+    write_file(
+        &root.join(".tcon/server.tcon"),
+        r#"
+import { baseSchema } from "./base.tcon";
+export const spec = { path: "server.json", format: "json" };
+export const schema = t.object({
+  name: t.string().default("my-service"),
+}).strict().extend(baseSchema);
+export const config = { port: 3000 };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "server.tcon"]);
+    assert!(out.status.success(), "build failed: {:?}", out);
+    let json = fs::read_to_string(root.join("server.json")).expect("read");
+    assert!(json.contains("\"port\": 3000"), "port missing: {json}");
+    assert!(json.contains("\"host\": \"0.0.0.0\""), "host missing: {json}");
+    assert!(json.contains("\"name\": \"my-service\""), "name missing: {json}");
+}
+
+#[test]
+fn schema_extend_base_fields_do_not_override_child() {
+    let root = mk_workspace("schema_extend_precedence");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const baseSchema = t.object({
+  timeout: t.number().int().default(30),
+  retries: t.number().int().default(3),
+}).strict();
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  timeout: t.number().int().default(60),
+}).strict().extend(baseSchema);
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(out.status.success(), "build failed: {:?}", out);
+    let json = fs::read_to_string(root.join("out.json")).expect("read");
+    // Child's timeout (60) must win over base's timeout (30)
+    assert!(json.contains("\"timeout\": 60"), "child timeout should win: {json}");
+    assert!(json.contains("\"retries\": 3"), "retries from base missing: {json}");
+}
+
+#[test]
+fn schema_extend_requires_object_schema() {
+    let root = mk_workspace("schema_extend_bad_arg");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ n: t.number() }).strict().extend(t.string());
+export const config = { n: 1 };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "extend with non-object should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("object schema"),
+        "expected object-schema error: {stderr}"
+    );
+}
+
+// --- tcon status command ---
+
+#[test]
+fn status_shows_ok_when_all_up_to_date() {
+    let root = mk_workspace("status_ok");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "status.json", format: "json" };
+export const schema = t.object({ v: t.number().default(1) }).strict();
+export const config = {};
+"#,
+    );
+    assert!(run(&root, &["build"]).status.success());
+    let out = run(&root, &["status"]);
+    assert!(out.status.success(), "status should succeed: {:?}", out);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ok"), "should show ok: {stdout}");
+    assert!(
+        stdout.contains("1/1"),
+        "should show 1/1 summary: {stdout}"
+    );
+}
+
+#[test]
+fn status_shows_missing_when_output_absent() {
+    let root = mk_workspace("status_miss");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "missing.json", format: "json" };
+export const schema = t.object({ v: t.number().default(1) }).strict();
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["status"]);
+    assert!(!out.status.success(), "status should fail when output missing");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("miss") || stdout.contains("missing"),
+        "should show missing: {stdout}"
+    );
+}
+
+#[test]
+fn status_handles_compile_error_gracefully() {
+    let root = mk_workspace("status_err");
+    write_file(
+        &root.join(".tcon/bad.tcon"),
+        r#"
+export const spec = { path: "bad.json", format: "json" };
+export const schema = t.object({ n: t.number() }).strict();
+export const config = { n: @ };
+"#,
+    );
+    write_file(
+        &root.join(".tcon/good.tcon"),
+        r#"
+export const spec = { path: "good.json", format: "json" };
+export const schema = t.object({ n: t.number().default(1) }).strict();
+export const config = {};
+"#,
+    );
+    assert!(
+        run(&root, &["build", "--entry", "good.tcon"])
+            .status
+            .success()
+    );
+    // status should report the error for bad.tcon but not crash
+    let out = run(&root, &["status"]);
+    assert!(!out.status.success(), "status exits non-zero when any entry has an error");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("error") || stdout.contains("bad.tcon"),
+        "should mention the failing entry: {stdout}"
+    );
+    assert!(
+        stdout.contains("ok") || stdout.contains("good.tcon"),
+        "should still report good.tcon as ok: {stdout}"
+    );
+}
+
+// --- --quiet / -q flag ---
+
+#[test]
+fn quiet_flag_suppresses_stdout_on_build() {
+    let root = mk_workspace("quiet_build");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ v: t.number().default(1) }).strict();
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["--quiet", "build"]);
+    assert!(out.status.success(), "quiet build failed: {:?}", out);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.is_empty(),
+        "stdout should be empty with --quiet: '{stdout}'"
+    );
+    assert!(root.join("out.json").exists(), "file should still be written");
+}
+
+#[test]
+fn quiet_flag_still_emits_errors_to_stderr() {
+    let root = mk_workspace("quiet_err");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ n: t.number() }).strict();
+export const config = { n: "wrong" };
+"#,
+    );
+    let out = run(&root, &["-q", "build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "should fail on type mismatch");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stdout.is_empty(), "stdout should be silent: '{stdout}'");
+    assert!(
+        stderr.contains("expected number"),
+        "error should still appear on stderr: {stderr}"
+    );
+}

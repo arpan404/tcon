@@ -1,14 +1,32 @@
 use crate::model::{Schema, Value};
 use std::collections::BTreeMap;
 
+/// Validate `value` against `schema`, collecting ALL errors in one pass.
+/// Returns `Err` with every problem joined by newlines so the caller can
+/// display them all at once.
 pub fn validate(schema: &Schema, value: &Value, file_name: &str) -> Result<Value, String> {
-    validate_inner(schema, Some(value), "config", file_name)
+    let mut errors = Vec::new();
+    let result = validate_node(schema, Some(value), "config", file_name, &mut errors);
+    if errors.is_empty() {
+        Ok(result)
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
-/// Ensure every `.default(...)` on the schema tree satisfies that node's own rules (strict object keys, min/max, etc.).
+/// Verify every `.default(...)` on the schema tree satisfies that node's own
+/// rules; collects ALL violations in one pass.
 pub fn validate_schema_defaults(schema: &Schema, file_name: &str) -> Result<(), String> {
-    defaults_walk(schema, file_name, "<schema.default>")
+    let mut errors = Vec::new();
+    defaults_walk(schema, file_name, "<schema.default>", &mut errors);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
+
+// ─── internals ───────────────────────────────────────────────────────────────
 
 fn schema_default(schema: &Schema) -> Option<&Value> {
     match schema {
@@ -24,47 +42,39 @@ fn schema_default(schema: &Schema) -> Option<&Value> {
     }
 }
 
-fn defaults_walk(schema: &Schema, file_name: &str, path: &str) -> Result<(), String> {
+fn defaults_walk(schema: &Schema, file_name: &str, path: &str, errors: &mut Vec<String>) {
     if let Some(d) = schema_default(schema) {
-        validate_inner(schema, Some(d), path, file_name).map(|_| ())?;
+        validate_node(schema, Some(d), path, file_name, errors);
     }
     match schema {
         Schema::Object { fields, .. } => {
             for (name, fs) in fields {
-                defaults_walk(fs, file_name, &format!("{path}.{name}"))?;
+                defaults_walk(fs, file_name, &format!("{path}.{name}"), errors);
             }
         }
-        Schema::Array { item, .. } => defaults_walk(item, file_name, &format!("{path}[]"))?,
+        Schema::Array { item, .. } => defaults_walk(item, file_name, &format!("{path}[]"), errors),
         Schema::Record { value, .. } => {
-            defaults_walk(value, file_name, &format!("{path}.<record>"))?;
+            defaults_walk(value, file_name, &format!("{path}.<record>"), errors);
         }
         Schema::Union { variants, .. } => {
             for (i, v) in variants.iter().enumerate() {
-                defaults_walk(v, file_name, &format!("{path}|variant{i}"))?;
+                defaults_walk(v, file_name, &format!("{path}|variant{i}"), errors);
             }
         }
         _ => {}
     }
-    Ok(())
 }
 
-fn type_of(v: &Value) -> &'static str {
-    match v {
-        Value::Object(_) => "object",
-        Value::Array(_) => "array",
-        Value::String(_) => "string",
-        Value::Number(_) => "number",
-        Value::Bool(_) => "boolean",
-        Value::Null => "null",
-    }
-}
-
-fn validate_inner(
+/// Core validator.  On error, pushes to `errors` and returns `Value::Null` as
+/// a harmless placeholder so sibling fields in the same object can still be
+/// validated (multi-error accumulation).
+fn validate_node(
     schema: &Schema,
     provided: Option<&Value>,
     path: &str,
     file_name: &str,
-) -> Result<Value, String> {
+    errors: &mut Vec<String>,
+) -> Value {
     match schema {
         Schema::String {
             default,
@@ -75,20 +85,26 @@ fn validate_inner(
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
-                (None, None) if *optional => return Ok(Value::Null),
-                (None, None) => return err(file_name, path, "required string field is missing"),
+                (None, None) if *optional => return Value::Null,
+                (None, None) => {
+                    push_err(errors, file_name, path, "required string field is missing");
+                    return Value::Null;
+                }
             };
             let Value::String(s) = &v else {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("expected string, got {}", type_of(&v)),
                 );
+                return Value::Null;
             };
             if let Some(m) = min
                 && (s.chars().count() as f64) < *m
             {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("string shorter than min ({} < {m})", s.chars().count()),
@@ -97,14 +113,16 @@ fn validate_inner(
             if let Some(m) = max
                 && (s.chars().count() as f64) > *m
             {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("string longer than max ({} > {m})", s.chars().count()),
                 );
             }
-            Ok(Value::String(s.clone()))
+            Value::String(s.clone())
         }
+
         Schema::Number {
             default,
             optional,
@@ -115,26 +133,42 @@ fn validate_inner(
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
-                (None, None) if *optional => return Ok(Value::Null),
-                (None, None) => return err(file_name, path, "required number field is missing"),
+                (None, None) if *optional => return Value::Null,
+                (None, None) => {
+                    push_err(errors, file_name, path, "required number field is missing");
+                    return Value::Null;
+                }
             };
             let Value::Number(n) = &v else {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("expected number, got {}", type_of(&v)),
                 );
+                return Value::Null;
             };
-            let parsed = n
-                .parse::<f64>()
-                .map_err(|_| format!("{file_name}: {path}: invalid number '{n}'"))?;
+            let parsed = match n.parse::<f64>() {
+                Ok(f) => f,
+                Err(_) => {
+                    push_err(
+                        errors,
+                        file_name,
+                        path,
+                        &format!("invalid number literal '{n}'"),
+                    );
+                    return Value::Null;
+                }
+            };
             if parsed.is_nan() || parsed.is_infinite() {
-                return err(file_name, path, "number must be finite");
+                push_err(errors, file_name, path, "number must be finite");
+                return Value::Null;
             }
             if let Some(m) = min
                 && parsed < *m
             {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("number smaller than min ({parsed} < {m})"),
@@ -143,39 +177,46 @@ fn validate_inner(
             if let Some(m) = max
                 && parsed > *m
             {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("number larger than max ({parsed} > {m})"),
                 );
             }
             if *int && parsed.fract() != 0.0 {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("expected integer number, got {parsed}"),
                 );
             }
-            Ok(Value::Number(n.clone()))
+            Value::Number(n.clone())
         }
+
         Schema::Boolean { default, optional } => {
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
-                (None, None) if *optional => return Ok(Value::Null),
+                (None, None) if *optional => return Value::Null,
                 (None, None) => {
-                    return err(file_name, path, "required boolean field is missing");
+                    push_err(errors, file_name, path, "required boolean field is missing");
+                    return Value::Null;
                 }
             };
             let Value::Bool(b) = v else {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("expected boolean, got {}", type_of(&v)),
                 );
+                return Value::Null;
             };
-            Ok(Value::Bool(b))
+            Value::Bool(b)
         }
+
         Schema::Array {
             item,
             default,
@@ -184,27 +225,35 @@ fn validate_inner(
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
-                (None, None) if *optional => return Ok(Value::Null),
-                (None, None) => return err(file_name, path, "required array field is missing"),
+                (None, None) if *optional => return Value::Null,
+                (None, None) => {
+                    push_err(errors, file_name, path, "required array field is missing");
+                    return Value::Null;
+                }
             };
             let Value::Array(items) = v else {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("expected array, got {}", type_of(&v)),
                 );
+                return Value::Null;
             };
+            // Validate every element — collect ALL element errors.
             let mut out = Vec::with_capacity(items.len());
             for (idx, it) in items.iter().enumerate() {
-                out.push(validate_inner(
+                out.push(validate_node(
                     item,
                     Some(it),
                     &format!("{path}[{idx}]"),
                     file_name,
-                )?);
+                    errors,
+                ));
             }
-            Ok(Value::Array(out))
+            Value::Array(out)
         }
+
         Schema::Record {
             value,
             default,
@@ -213,26 +262,32 @@ fn validate_inner(
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
-                (None, None) if *optional => return Ok(Value::Null),
-                (None, None) => return err(file_name, path, "required record field is missing"),
+                (None, None) if *optional => return Value::Null,
+                (None, None) => {
+                    push_err(errors, file_name, path, "required record field is missing");
+                    return Value::Null;
+                }
             };
             let Value::Object(obj) = v else {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("expected object for record, got {}", type_of(&v)),
                 );
+                return Value::Null;
             };
             let mut out = BTreeMap::new();
             for (k, v) in &obj {
                 let child_path = format!("{path}.{k}");
                 out.insert(
                     k.clone(),
-                    validate_inner(value, Some(v), &child_path, file_name)?,
+                    validate_node(value, Some(v), &child_path, file_name, errors),
                 );
             }
-            Ok(Value::Object(out))
+            Value::Object(out)
         }
+
         Schema::Object {
             fields,
             strict,
@@ -242,17 +297,23 @@ fn validate_inner(
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
-                (None, None) if *optional => return Ok(Value::Null),
-                (None, None) => return err(file_name, path, "required object field is missing"),
+                (None, None) if *optional => return Value::Null,
+                (None, None) => {
+                    push_err(errors, file_name, path, "required object field is missing");
+                    return Value::Null;
+                }
             };
             let Value::Object(obj) = v else {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("expected object, got {}", type_of(&v)),
                 );
+                return Value::Null;
             };
 
+            // Unknown-key check (non-fatal: still validate known fields).
             if *strict {
                 let mut unknown: Vec<String> = obj
                     .keys()
@@ -262,7 +323,8 @@ fn validate_inner(
                 if !unknown.is_empty() {
                     unknown.sort();
                     let known: Vec<&str> = fields.keys().map(String::as_str).collect();
-                    return err(
+                    push_err(
+                        errors,
                         file_name,
                         path,
                         &format!(
@@ -278,11 +340,13 @@ fn validate_inner(
                 }
             }
 
+            // Validate ALL declared fields — do NOT stop on first error.
             let mut out = BTreeMap::new();
             for (name, field_schema) in fields {
                 let in_value = obj.get(name);
                 let child_path = format!("{path}.{name}");
-                let normalized = validate_inner(field_schema, in_value, &child_path, file_name)?;
+                let normalized =
+                    validate_node(field_schema, in_value, &child_path, file_name, errors);
                 if normalized != Value::Null {
                     out.insert(name.clone(), normalized);
                 }
@@ -296,8 +360,9 @@ fn validate_inner(
                 }
             }
 
-            Ok(Value::Object(out))
+            Value::Object(out)
         }
+
         Schema::Enum {
             variants,
             default,
@@ -306,15 +371,20 @@ fn validate_inner(
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
-                (None, None) if *optional => return Ok(Value::Null),
-                (None, None) => return err(file_name, path, "required enum field is missing"),
+                (None, None) if *optional => return Value::Null,
+                (None, None) => {
+                    push_err(errors, file_name, path, "required enum field is missing");
+                    return Value::Null;
+                }
             };
             let Value::String(s) = &v else {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!("expected enum string value, got {}", type_of(&v)),
                 );
+                return Value::Null;
             };
             if !variants.iter().any(|v| v == s) {
                 let allowed = variants
@@ -322,7 +392,8 @@ fn validate_inner(
                     .map(|v| format!("\"{v}\""))
                     .collect::<Vec<_>>()
                     .join(", ");
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!(
@@ -330,8 +401,9 @@ fn validate_inner(
                     ),
                 );
             }
-            Ok(Value::String(s.clone()))
+            Value::String(s.clone())
         }
+
         Schema::Literal {
             value: literal,
             default,
@@ -340,11 +412,15 @@ fn validate_inner(
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
-                (None, None) if *optional => return Ok(Value::Null),
-                (None, None) => return err(file_name, path, "required literal field is missing"),
+                (None, None) if *optional => return Value::Null,
+                (None, None) => {
+                    push_err(errors, file_name, path, "required literal field is missing");
+                    return Value::Null;
+                }
             };
             if v != *literal {
-                return err(
+                push_err(
+                    errors,
                     file_name,
                     path,
                     &format!(
@@ -354,8 +430,9 @@ fn validate_inner(
                     ),
                 );
             }
-            Ok(v)
+            v
         }
+
         Schema::Union {
             variants,
             default,
@@ -365,23 +442,46 @@ fn validate_inner(
                 (Some(v), _) => Some(v),
                 (None, Some(d)) => Some(d),
                 (None, None) if *optional => None,
-                (None, None) => return err(file_name, path, "required union field is missing"),
+                (None, None) => {
+                    push_err(errors, file_name, path, "required union field is missing");
+                    return Value::Null;
+                }
             };
             let Some(value) = value else {
-                return Ok(Value::Null);
+                return Value::Null;
             };
-            let mut errors = Vec::new();
+            // Try each variant independently; take the first success.
+            let mut variant_errors = Vec::new();
             for (i, variant) in variants.iter().enumerate() {
-                match validate_inner(variant, Some(value), path, file_name) {
-                    Ok(v) => return Ok(v),
-                    Err(e) => errors.push(format!("variant {i}: {e}")),
+                let mut probe = Vec::new();
+                let result = validate_node(variant, Some(value), path, file_name, &mut probe);
+                if probe.is_empty() {
+                    return result;
                 }
+                variant_errors.push(format!("variant {i}: {}", probe.join("; ")));
             }
-            Err(format!(
-                "{file_name}: {path}: value did not match any union variant ({})",
-                errors.join("; ")
-            ))
+            push_err(
+                errors,
+                file_name,
+                path,
+                &format!(
+                    "value did not match any union variant ({})",
+                    variant_errors.join("; ")
+                ),
+            );
+            Value::Null
         }
+    }
+}
+
+fn type_of(v: &Value) -> &'static str {
+    match v {
+        Value::Object(_) => "object",
+        Value::Array(_) => "array",
+        Value::String(_) => "string",
+        Value::Number(_) => "number",
+        Value::Bool(_) => "boolean",
+        Value::Null => "null",
     }
 }
 
@@ -396,6 +496,6 @@ fn fmt_value(v: &Value) -> String {
     }
 }
 
-fn err<T>(file_name: &str, path: &str, msg: &str) -> Result<T, String> {
-    Err(format!("{file_name}: {path}: {msg}"))
+fn push_err(errors: &mut Vec<String>, file_name: &str, path: &str, msg: &str) {
+    errors.push(format!("{file_name}: {path}: {msg}"));
 }

@@ -100,7 +100,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 /// If `input` is close to a known subcommand, return it (for "did you mean?" hints).
 fn suggest_similar_command(input: &str) -> Option<&'static str> {
     const COMMANDS: &[&str] = &[
-        "validate", "build", "generate", "check", "diff", "print", "watch", "init",
+        "validate", "build", "generate", "check", "diff", "status", "print", "watch", "init",
     ];
     let threshold = match input.chars().count() {
         0..3 => 0,
@@ -209,6 +209,12 @@ fn usage() {
         sreset = s.reset
     );
     eprintln!(
+        "  {flag}-q{sreset}, {flag}--quiet{sreset}{pad}Suppress stdout; only emit errors to stderr (CI-friendly).",
+        flag = s.flag,
+        sreset = s.reset,
+        pad = " ".repeat(20)
+    );
+    eprintln!(
         "  {flag}-h{sreset}, {flag}--help{sreset}{pad}This screen.",
         flag = s.flag,
         sreset = s.reset,
@@ -246,6 +252,10 @@ fn usage() {
         "Recompile and fail if on-disk outputs differ (drift / stale artifacts).",
     );
     cmd("diff", "Show unified-style hunks for files that differ.");
+    cmd(
+        "status",
+        "Per-entry health check: ok / drift / missing / error. Handles compile errors gracefully.",
+    );
     cmd(
         "print",
         "Debug: print the parsed program for one `--entry`.",
@@ -450,7 +460,115 @@ fn compile_entry(
     Ok((output_path, rendered))
 }
 
-fn run_validate(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
+fn run_status(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
+    let entries = resolve_entries(ws, entry)?;
+    if entries.is_empty() {
+        return Err("no .tcon files found under .tcon/".to_string());
+    }
+
+    let s = Theme::for_stdout();
+    let ansi = color_on(&io::stdout());
+    let mut ok_count = 0usize;
+    let total = entries.len();
+
+    for entry_file in &entries {
+        let entry_rel = entry_file
+            .strip_prefix(&ws.tcon_dir)
+            .unwrap_or(entry_file)
+            .display();
+        let mut cache = LoadCache::default();
+        match compile_entry(ws, entry_file, &mut cache) {
+            Err(e) => {
+                let first = e.lines().next().unwrap_or("(error)");
+                println!(
+                    "{bad}error{rst}  {p}{entry_rel}{rst}",
+                    bad = s.bad,
+                    p = s.path,
+                    rst = s.reset
+                );
+                println!("         {d}{first}{rst}", d = s.dim, rst = s.reset);
+                let extra_count = e.lines().count().saturating_sub(1);
+                if extra_count > 0 {
+                    println!(
+                        "         {d}… and {extra_count} more error(s){rst}",
+                        d = s.dim,
+                        rst = s.reset
+                    );
+                }
+            }
+            Ok((output, expected)) => {
+                let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
+                match fs::read_to_string(&output) {
+                    Ok(actual) if actual == expected => {
+                        ok_count += 1;
+                        println!(
+                            "{ok}  ok{rst}  {p}{entry_rel}{rst}  {d}→ {rel}{rst}",
+                            ok = s.ok,
+                            p = s.path,
+                            d = s.dim,
+                            rst = s.reset
+                        );
+                    }
+                    Ok(_) => {
+                        let diff = describe_drift(&fs::read_to_string(&output).unwrap_or_default(), &expected, ansi);
+                        println!(
+                            "{warn}drift{rst}  {p}{entry_rel}{rst}  {d}→ {rel}  (on disk ≠ compiled){rst}",
+                            warn = s.warn,
+                            p = s.path,
+                            d = s.dim,
+                            rst = s.reset
+                        );
+                        for line in diff.lines().take(6) {
+                            println!("         {line}");
+                        }
+                    }
+                    Err(e) if e.kind() == ErrorKind::NotFound => {
+                        println!(
+                            "{bad} miss{rst}  {p}{entry_rel}{rst}  {d}→ {rel}  (run `tcon build`){rst}",
+                            bad = s.bad,
+                            p = s.path,
+                            d = s.dim,
+                            rst = s.reset
+                        );
+                    }
+                    Err(e) => {
+                        println!(
+                            "{bad}error{rst}  {p}{entry_rel}{rst}  {d}→ {rel}  ({e}){rst}",
+                            bad = s.bad,
+                            p = s.path,
+                            d = s.dim,
+                            rst = s.reset
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    println!();
+    let (summary_color, summary_icon) = if ok_count == total {
+        (s.ok, "✓")
+    } else {
+        (s.warn, "!")
+    };
+    println!(
+        "{c}{summary_icon} {ok_count}/{total} output(s) up to date{rst}",
+        c = summary_color,
+        rst = s.reset
+    );
+
+    if ok_count < total {
+        Err(format!(
+            "{}/{} output(s) need attention — run `tcon build` or `tcon check`",
+            total - ok_count,
+            total
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn run_validate(ws: &Workspace, entry: Option<&str>, quiet: bool) -> Result<(), String> {
     let entries = resolve_entries(ws, entry)?;
     if entries.is_empty() {
         return Err("no .tcon files found under .tcon/".to_string());
@@ -458,37 +576,39 @@ fn run_validate(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
 
     let s = Theme::for_stdout();
     let compiled = compile_all(ws, &entries)?;
-    for (entry_file, output, _) in &compiled {
-        let out_rel = output.strip_prefix(&ws.root).unwrap_or(output).display();
-        let entry_rel = entry_file
-            .strip_prefix(&ws.tcon_dir)
-            .unwrap_or(entry_file)
-            .display();
+    if !quiet {
+        for (entry_file, output, _) in &compiled {
+            let out_rel = output.strip_prefix(&ws.root).unwrap_or(output).display();
+            let entry_rel = entry_file
+                .strip_prefix(&ws.tcon_dir)
+                .unwrap_or(entry_file)
+                .display();
+            println!(
+                "{ok}ok{s}  {p}{entry_rel}{s} {d}→{s} {p}{out_rel}{s}  {d}(dry-run; disk not touched){s}",
+                ok = s.ok,
+                p = s.path,
+                d = s.dim,
+                s = s.reset,
+            );
+        }
+        println!();
         println!(
-            "{ok}ok{s}  {p}{entry_rel}{s} {d}→{s} {p}{out_rel}{s}  {d}(dry-run; disk not touched){s}",
-            ok = s.ok,
-            p = s.path,
+            "{d}validate{s}  compiled `.tcon` only — did not read or write `{p}spec.path{s}` outputs.",
             d = s.dim,
+            p = s.path,
+            s = s.reset,
+        );
+        println!(
+            "{d}next{s}     {a}tcon check{s} before commit, or {a}tcon build{s} to refresh artifacts.",
+            d = s.dim,
+            a = s.accent,
             s = s.reset,
         );
     }
-    println!();
-    println!(
-        "{d}validate{s}  compiled `.tcon` only — did not read or write `{p}spec.path{s}` outputs.",
-        d = s.dim,
-        p = s.path,
-        s = s.reset,
-    );
-    println!(
-        "{d}next{s}     {a}tcon check{s} before commit, or {a}tcon build{s} to refresh artifacts.",
-        d = s.dim,
-        a = s.accent,
-        s = s.reset,
-    );
     Ok(())
 }
 
-fn run_build(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
+fn run_build(ws: &Workspace, entry: Option<&str>, quiet: bool) -> Result<(), String> {
     let entries = resolve_entries(ws, entry)?;
     if entries.is_empty() {
         return Err("no .tcon files found under .tcon/".to_string());
@@ -502,18 +622,20 @@ fn run_build(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
                 .map_err(|e| format!("failed creating output directory: {e}"))?;
         }
         atomic_write(&output, &rendered)?;
-        let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
-        println!(
-            "{ok}ok{s}  wrote {p}{rel}{s}",
-            ok = s.ok,
-            p = s.path,
-            s = s.reset,
-        );
+        if !quiet {
+            let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
+            println!(
+                "{ok}ok{s}  wrote {p}{rel}{s}",
+                ok = s.ok,
+                p = s.path,
+                s = s.reset,
+            );
+        }
     }
     Ok(())
 }
 
-fn run_check(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
+fn run_check(ws: &Workspace, entry: Option<&str>, quiet: bool) -> Result<(), String> {
     let entries = resolve_entries(ws, entry)?;
     if entries.is_empty() {
         return Err("no .tcon files found under .tcon/".to_string());
@@ -542,15 +664,17 @@ fn run_check(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
             } else {
                 "on disk ≠ compiled output"
             };
-            println!(
-                "{bad}drift{s}  {p}{rel}{s}  {d}({note}){s}",
-                bad = s.bad,
-                p = s.path,
-                d = s.dim,
-                s = s.reset,
-            );
-            println!("{}", describe_drift(&actual, &expected, ansi));
-        } else {
+            if !quiet {
+                println!(
+                    "{bad}drift{s}  {p}{rel}{s}  {d}({note}){s}",
+                    bad = s.bad,
+                    p = s.path,
+                    d = s.dim,
+                    s = s.reset,
+                );
+                println!("{}", describe_drift(&actual, &expected, ansi));
+            }
+        } else if !quiet {
             println!(
                 "{ok}ok{s}  {p}{rel}{s}  {d}(matches compiled output){s}",
                 ok = s.ok,
@@ -632,7 +756,7 @@ fn run_watch(ws: &Workspace, entry: Option<&str>, poll_interval: Duration) -> Re
     if entries.is_empty() {
         return Err("no .tcon files found under .tcon/".to_string());
     }
-    run_build(ws, entry)?;
+    run_build(ws, entry, false)?;
     let mut watched = resolve_watch_files(&entries)?;
     println!(
         "watching {} source file(s) (poll every {}ms); Ctrl+C to stop",
@@ -675,7 +799,7 @@ fn run_watch(ws: &Workspace, entry: Option<&str>, poll_interval: Duration) -> Re
 
             println!("change detected, rebuilding...");
             println!("changed files: {}", list.join(", "));
-            if let Err(e) = run_build(ws, entry) {
+            if let Err(e) = run_build(ws, entry, false) {
                 print_error(ErrorFormat::Text, &e);
             }
             watched = resolve_watch_files(&entries)?;
@@ -726,8 +850,9 @@ fn changed_files(
     out
 }
 
-fn parse_global_args(args: &[String]) -> Result<(ErrorFormat, String, Vec<String>), String> {
+fn parse_global_args(args: &[String]) -> Result<(ErrorFormat, bool, String, Vec<String>), String> {
     let mut format = ErrorFormat::Text;
+    let mut quiet = false;
     let mut positional = Vec::new();
     let mut i = 0usize;
     while i < args.len() {
@@ -748,6 +873,11 @@ fn parse_global_args(args: &[String]) -> Result<(ErrorFormat, String, Vec<String
             i += 2;
             continue;
         }
+        if args[i] == "--quiet" || args[i] == "-q" {
+            quiet = true;
+            i += 1;
+            continue;
+        }
         positional.push(args[i].clone());
         i += 1;
     }
@@ -755,7 +885,7 @@ fn parse_global_args(args: &[String]) -> Result<(ErrorFormat, String, Vec<String
     let Some(cmd) = positional.first() else {
         return Err("missing command".to_string());
     };
-    Ok((format, cmd.clone(), positional[1..].to_vec()))
+    Ok((format, quiet, cmd.clone(), positional[1..].to_vec()))
 }
 
 #[derive(Debug, Clone)]
@@ -857,40 +987,59 @@ fn parse_diagnostic(message: &str) -> DiagnosticJson {
     }
 }
 
+fn emit_single_error_json(message: &str) {
+    let d = parse_diagnostic(message);
+    let file = d.file.unwrap_or_default();
+    let line = d
+        .line
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let col = d
+        .col
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string());
+    let file_json = if file.is_empty() {
+        "null".to_string()
+    } else {
+        format!("\"{}\"", json_escape(&file))
+    };
+    eprintln!(
+        "{{\"code\":\"{}\",\"message\":\"{}\",\"file\":{},\"line\":{},\"col\":{}}}",
+        d.code,
+        json_escape(&d.message),
+        file_json,
+        line,
+        col
+    );
+}
+
+/// Print one or more errors.  When the validator returns a multi-line error
+/// (one per `\n`), each line is printed as a separate diagnostic.
 fn print_error(format: ErrorFormat, message: &str) {
+    let lines: Vec<&str> = message.lines().collect();
     match format {
         ErrorFormat::Text => {
             let s = Theme::for_stderr();
-            let body = message
-                .strip_prefix("error: ")
-                .map(str::trim_start)
-                .unwrap_or(message);
-            eprintln!("{bad}error:{rst} {body}", bad = s.bad, rst = s.reset);
+            for line in &lines {
+                let body = line
+                    .strip_prefix("error: ")
+                    .map(str::trim_start)
+                    .unwrap_or(line);
+                eprintln!("{bad}error:{rst} {body}", bad = s.bad, rst = s.reset);
+            }
+            if lines.len() > 1 {
+                eprintln!(
+                    "{bad}  └─ {n} error(s) above{rst}",
+                    bad = s.bad,
+                    n = lines.len(),
+                    rst = s.reset
+                );
+            }
         }
         ErrorFormat::Json => {
-            let d = parse_diagnostic(message);
-            let file = d.file.unwrap_or_default();
-            let line = d
-                .line
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "null".to_string());
-            let col = d
-                .col
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "null".to_string());
-            let file_json = if file.is_empty() {
-                "null".to_string()
-            } else {
-                format!("\"{}\"", json_escape(&file))
-            };
-            eprintln!(
-                "{{\"code\":\"{}\",\"message\":\"{}\",\"file\":{},\"line\":{},\"col\":{}}}",
-                d.code,
-                json_escape(&d.message),
-                file_json,
-                line,
-                col
-            );
+            for line in &lines {
+                emit_single_error_json(line);
+            }
         }
     }
 }
@@ -1052,7 +1201,7 @@ export const config = {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    let (error_format, cmd, rest) = match parse_global_args(&args) {
+    let (error_format, quiet, cmd, rest) = match parse_global_args(&args) {
         Ok(v) => v,
         Err(e) => {
             usage();
@@ -1083,10 +1232,15 @@ fn main() {
     };
 
     let result = match cmd.as_str() {
-        "validate" => parse_optional_entry(&rest).and_then(|entry| run_validate(&ws, entry)),
-        "build" | "generate" => parse_optional_entry(&rest).and_then(|entry| run_build(&ws, entry)),
-        "check" => parse_optional_entry(&rest).and_then(|entry| run_check(&ws, entry)),
+        "validate" => {
+            parse_optional_entry(&rest).and_then(|entry| run_validate(&ws, entry, quiet))
+        }
+        "build" | "generate" => {
+            parse_optional_entry(&rest).and_then(|entry| run_build(&ws, entry, quiet))
+        }
+        "check" => parse_optional_entry(&rest).and_then(|entry| run_check(&ws, entry, quiet)),
         "diff" => parse_optional_entry(&rest).and_then(|entry| run_diff(&ws, entry)),
+        "status" => parse_optional_entry(&rest).and_then(|entry| run_status(&ws, entry)),
         "print" => parse_required_entry(&rest).and_then(|entry| run_print(&ws, entry)),
         "watch" => {
             parse_watch_args(&rest).and_then(|(entry, interval)| run_watch(&ws, entry, interval))

@@ -16,7 +16,7 @@ pub fn evaluate_schema(
     file_name: &str,
 ) -> Result<Schema, String> {
     let expr = resolve_named_export(exports, "schema", file_name)?;
-    schema_eval::evaluate_schema_expr(expr, file_name)
+    schema_eval::evaluate_schema_expr(expr, exports, file_name)
 }
 
 pub fn evaluate_config(exports: &BTreeMap<String, Expr>, file_name: &str) -> Result<Value, String> {

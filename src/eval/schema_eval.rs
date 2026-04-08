@@ -2,21 +2,41 @@ use crate::eval::config_eval::evaluate_config_expr;
 use crate::model::{Expr, Key, Schema, Value};
 use std::collections::BTreeMap;
 
-pub fn evaluate_schema_expr(expr: &Expr, file_name: &str) -> Result<Schema, String> {
-    eval_chain(expr, file_name)
+pub fn evaluate_schema_expr(
+    expr: &Expr,
+    exports: &BTreeMap<String, Expr>,
+    file_name: &str,
+) -> Result<Schema, String> {
+    eval_chain(expr, exports, file_name)
 }
 
-fn eval_chain(expr: &Expr, file_name: &str) -> Result<Schema, String> {
+/// Recursively evaluate a schema expression.
+///
+/// The `exports` map is threaded through so that bare identifiers like
+/// `baseSchema` (imported from another file or defined locally) can be
+/// resolved as schema values — enabling patterns like `.extend(baseSchema)`.
+fn eval_chain(
+    expr: &Expr,
+    exports: &BTreeMap<String, Expr>,
+    file_name: &str,
+) -> Result<Schema, String> {
     match expr {
+        // Identifier → resolve from exports (enables reuse / extend)
+        Expr::Ident(name, _) => {
+            let resolved = exports.get(name.as_str()).ok_or_else(|| {
+                format!("{file_name}: undefined schema identifier '{name}'")
+            })?;
+            eval_chain(resolved, exports, file_name)
+        }
         Expr::Call(callee, args, _) => match callee.as_ref() {
             Expr::Member(base, method, _) => {
                 if let Expr::Ident(root, _) = base.as_ref()
                     && root == "t"
                 {
-                    build_base(method, args, file_name)
+                    build_base(method, args, exports, file_name)
                 } else {
-                    let mut schema = eval_chain(base, file_name)?;
-                    apply_method(&mut schema, method, args, file_name)?;
+                    let mut schema = eval_chain(base, exports, file_name)?;
+                    apply_method(&mut schema, method, args, exports, file_name)?;
                     Ok(schema)
                 }
             }
@@ -30,7 +50,12 @@ fn eval_chain(expr: &Expr, file_name: &str) -> Result<Schema, String> {
     }
 }
 
-fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, String> {
+fn build_base(
+    name: &str,
+    args: &[Expr],
+    exports: &BTreeMap<String, Expr>,
+    file_name: &str,
+) -> Result<Schema, String> {
     match name {
         "string" => Ok(Schema::String {
             default: None,
@@ -63,7 +88,7 @@ fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, Stri
                 let name = match k {
                     Key::Ident(s) | Key::String(s) => s.clone(),
                 };
-                out.insert(name, eval_chain(v, file_name)?);
+                out.insert(name, eval_chain(v, exports, file_name)?);
             }
             Ok(Schema::Object {
                 fields: out,
@@ -77,7 +102,7 @@ fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, Stri
                 return Err(format!("{file_name}: t.array() expects one argument"));
             }
             Ok(Schema::Array {
-                item: Box::new(eval_chain(&args[0], file_name)?),
+                item: Box::new(eval_chain(&args[0], exports, file_name)?),
                 default: None,
                 optional: false,
             })
@@ -87,7 +112,7 @@ fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, Stri
                 return Err(format!("{file_name}: t.record() expects one argument"));
             }
             Ok(Schema::Record {
-                value: Box::new(eval_chain(&args[0], file_name)?),
+                value: Box::new(eval_chain(&args[0], exports, file_name)?),
                 default: None,
                 optional: false,
             })
@@ -156,7 +181,7 @@ fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, Stri
             };
             let mut variants = Vec::with_capacity(items.len());
             for (item, _) in items {
-                variants.push(eval_chain(item, file_name)?);
+                variants.push(eval_chain(item, exports, file_name)?);
             }
             if variants.len() < 2 {
                 return Err(format!(
@@ -179,6 +204,7 @@ fn apply_method(
     schema: &mut Schema,
     method: &str,
     args: &[Expr],
+    exports: &BTreeMap<String, Expr>,
     file_name: &str,
 ) -> Result<(), String> {
     match method {
@@ -279,6 +305,30 @@ fn apply_method(
                 "{file_name}: .strict() only valid on object schema"
             )),
         },
+        "extend" => {
+            if args.len() != 1 {
+                return Err(format!(
+                    "{file_name}: .extend() expects exactly one object-schema argument"
+                ));
+            }
+            let ext = eval_chain(&args[0], exports, file_name)?;
+            let Schema::Object { fields: base_fields, .. } = schema else {
+                return Err(format!(
+                    "{file_name}: .extend() is only valid on an object schema"
+                ));
+            };
+            let Schema::Object { fields: ext_fields, .. } = ext else {
+                return Err(format!(
+                    "{file_name}: .extend() argument must be an object schema"
+                ));
+            };
+            // Fields already declared in the child take precedence; the base
+            // fills in any keys that are absent.
+            for (k, v) in ext_fields {
+                base_fields.entry(k).or_insert(v);
+            }
+            Ok(())
+        }
         _ => Err(format!(
             "{file_name}: unsupported schema method .{method}()"
         )),
