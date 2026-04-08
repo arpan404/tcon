@@ -2,6 +2,9 @@ name: ci
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
 
 jobs:
   test:
@@ -16,3 +19,30 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --all-targets
+
+  tcon-workspace-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install tcon
+        run: cargo install --path . --locked
+      - name: Validate compat fixtures as workspace
+        run: |
+          set -e
+          root=$(pwd)
+          for d in compat/v1/success/*/; do
+            name=$(basename "$d")
+            tmp=$(mktemp -d)
+            mkdir -p "$tmp/.tcon"
+            cp "$d/entry.tcon" "$tmp/.tcon/entry.tcon"
+            cd "$tmp"
+            tcon validate --entry entry.tcon
+            tcon build --entry entry.tcon
+            expected_path=$(tr -d '\r\n' < "$root/$d/expected_path.txt")
+            diff -u "$root/$d/expected_output.txt" "./$expected_path" || exit 1
+            cd "$root"
+            rm -rf "$tmp"
+            echo "ok $name"
+          done

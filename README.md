@@ -11,6 +11,7 @@ Documentation:
 - DSL reference: `docs/dsl-reference.md`
 - Diagnostics contract: `docs/diagnostics/v1.md`
 - Publication guide: `docs/publication/github.md`
+- CI/CD: `docs/ci.md`
 
 ## Project maturity
 

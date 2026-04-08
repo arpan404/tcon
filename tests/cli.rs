@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn mk_workspace(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -37,6 +38,83 @@ fn run(root: &Path, args: &[&str]) -> std::process::Output {
         .current_dir(root)
         .output()
         .expect("spawn tcon")
+}
+
+#[test]
+fn validate_compiles_without_writing_artifacts() {
+    let root = mk_workspace("validate_cmd");
+    write_file(
+        &root.join(".tcon/server.tcon"),
+        r#"
+export const spec = { path: "server.json", format: "json", mode: "replace" };
+export const schema = t.object({
+  host: t.string().default("0.0.0.0"),
+  port: t.number().int().min(1).max(65535).default(8080),
+}).strict();
+export const config = { port: 3000 };
+"#,
+    );
+    let artifact = root.join("server.json");
+    if artifact.exists() {
+        fs::remove_file(&artifact).unwrap();
+    }
+    let v = run(&root, &["validate"]);
+    assert!(v.status.success(), "validate failed: {:?}", v);
+    assert!(
+        !artifact.exists(),
+        "validate must not write spec.path output"
+    );
+
+    assert!(run(&root, &["build"]).status.success());
+    assert!(artifact.exists(), "build should create output");
+}
+
+#[test]
+fn generate_alias_writes_same_as_build() {
+    let root = mk_workspace("generate_alias");
+    write_file(
+        &root.join(".tcon/app.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ n: t.number().default(1) }).strict();
+export const config = { n: 2 };
+"#,
+    );
+    assert!(
+        run(&root, &["generate", "--entry", "app.tcon"])
+            .status
+            .success()
+    );
+    let json = fs::read_to_string(root.join("out.json")).expect("read");
+    assert!(json.contains("\"n\": 2"));
+}
+
+#[test]
+fn watch_prints_watch_banner() {
+    let root = mk_workspace("watch_banner");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "w.json", format: "json" };
+export const schema = t.object({}).strict();
+export const config = {};
+"#,
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tcon"))
+        .args(["watch", "--interval-ms", "300"])
+        .current_dir(&root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn watch");
+    thread::sleep(Duration::from_millis(900));
+    child.kill().ok();
+    let out = child.wait_with_output().expect("wait watch");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("watching") && stdout.contains(".tcon"),
+        "unexpected watch stdout: {stdout}"
+    );
 }
 
 #[test]

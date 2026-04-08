@@ -11,16 +11,20 @@
    - Windows PowerShell: `./scripts/install.ps1`
 2. Initialize starter templates:
    - `tcon init`
-3. Build generated configs:
-   - `tcon build`
-4. Verify drift in CI/local:
+3. Validate without writing files (optional, good for CI):
+   - `tcon validate`
+4. Build generated configs:
+   - `tcon build` (or `tcon generate`)
+5. Verify drift in CI/local:
    - `tcon check`
+6. Live reload while editing:
+   - `tcon watch` (optional: `--interval-ms 500`)
 
 ## Typical workflow
 
 - Author `.tcon` files under `.tcon/`.
-- Commit generated output files.
-- Run `tcon check` in CI to block drift.
+- Commit generated output files (or generate in a release step).
+- In CI: run `tcon validate` (fast compile-only) and/or `tcon check` (drift vs repo). See `docs/ci.md`.
 
 ## Example
 
@@ -38,6 +42,7 @@ export const config = { port: 3000 };
 ## More docs
 
 - CLI reference: `docs/cli-reference.md`
+- CI/CD: `docs/ci.md`
 - DSL reference: `docs/dsl-reference.md`
 - Diagnostics JSON codes: `docs/diagnostics/v1.md`
 - GitHub publication: `docs/publication/github.md`

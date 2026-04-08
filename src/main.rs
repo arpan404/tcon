@@ -33,11 +33,12 @@ enum ErrorFormat {
 fn usage() {
     eprintln!("tcon - typed configuration compiler");
     eprintln!("Usage:");
-    eprintln!("  tcon [--error-format text|json] build [--entry <file.tcon>]");
+    eprintln!("  tcon [--error-format text|json] validate [--entry <file.tcon>]");
+    eprintln!("  tcon [--error-format text|json] build|generate [--entry <file.tcon>]");
     eprintln!("  tcon [--error-format text|json] check [--entry <file.tcon>]");
     eprintln!("  tcon [--error-format text|json] diff [--entry <file.tcon>]");
     eprintln!("  tcon [--error-format text|json] print --entry <file.tcon>");
-    eprintln!("  tcon [--error-format text|json] watch [--entry <file.tcon>]");
+    eprintln!("  tcon [--error-format text|json] watch [--entry <file.tcon>] [--interval-ms <n>]");
     eprintln!("  tcon [--error-format text|json] init [--preset <name>] [--force]");
 }
 
@@ -53,6 +54,38 @@ fn parse_optional_entry(args: &[String]) -> Result<Option<&str>, String> {
         return Ok(Some(args[1].as_str()));
     }
     Err("expected optional --entry <file.tcon>".to_string())
+}
+
+fn parse_watch_args(args: &[String]) -> Result<(Option<&str>, Duration), String> {
+    let mut entry: Option<&str> = None;
+    let mut interval_ms: u64 = 800;
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i] == "--entry" {
+            let path = args
+                .get(i + 1)
+                .ok_or_else(|| "missing value for --entry".to_string())?;
+            entry = Some(path.as_str());
+            i += 2;
+            continue;
+        }
+        if args[i] == "--interval-ms" {
+            let raw = args
+                .get(i + 1)
+                .ok_or_else(|| "missing value for --interval-ms".to_string())?;
+            let ms: u64 = raw
+                .parse()
+                .map_err(|_| format!("invalid --interval-ms value '{raw}'"))?;
+            if ms < 100 {
+                return Err("--interval-ms must be at least 100".to_string());
+            }
+            interval_ms = ms;
+            i += 2;
+            continue;
+        }
+        return Err(format!("unexpected watch argument: {}", args[i]));
+    }
+    Ok((entry, Duration::from_millis(interval_ms)))
 }
 
 fn parse_required_entry(args: &[String]) -> Result<&str, String> {
@@ -126,6 +159,23 @@ fn compile_entry(
         _ => unreachable!(),
     };
     Ok((output_path, rendered))
+}
+
+fn run_validate(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
+    let entries = resolve_entries(ws, entry)?;
+    if entries.is_empty() {
+        return Err("no .tcon files found under .tcon/".to_string());
+    }
+
+    let mut cache = LoadCache::default();
+    for entry_file in entries {
+        let (output, _) = compile_entry(ws, &entry_file, &mut cache)?;
+        println!(
+            "valid {}",
+            output.strip_prefix(&ws.root).unwrap_or(&output).display()
+        );
+    }
+    Ok(())
 }
 
 fn run_build(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
@@ -218,26 +268,36 @@ fn run_print(ws: &Workspace, entry: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn run_watch(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
+fn run_watch(ws: &Workspace, entry: Option<&str>, poll_interval: Duration) -> Result<(), String> {
     let entries = resolve_entries(ws, entry)?;
     if entries.is_empty() {
         return Err("no .tcon files found under .tcon/".to_string());
     }
     run_build(ws, entry)?;
-    println!("watching .tcon files for changes...");
-
     let mut watched = resolve_watch_files(&entries)?;
+    println!(
+        "watching {} source file(s) (poll every {}ms); Ctrl+C to stop",
+        watched.len(),
+        poll_interval.as_millis()
+    );
+    for p in &watched {
+        println!("  - {}", p.strip_prefix(&ws.root).unwrap_or(p).display());
+    }
+
     let mut stamps = read_stamps(&watched);
+    let debounce_main =
+        Duration::from_millis((poll_interval.as_millis() / 2).clamp(150, 800) as u64);
+    let debounce_tick = Duration::from_millis(120);
     loop {
-        std::thread::sleep(Duration::from_millis(800));
+        std::thread::sleep(poll_interval);
         watched = resolve_watch_files(&entries)?;
         let next = read_stamps(&watched);
         let mut changed = changed_files(&stamps, &next);
         if !changed.is_empty() {
             // Debounce bursts of edits into one rebuild cycle.
-            let debounce_until = Instant::now() + Duration::from_millis(450);
+            let debounce_until = Instant::now() + debounce_main;
             while Instant::now() < debounce_until {
-                std::thread::sleep(Duration::from_millis(120));
+                std::thread::sleep(debounce_tick);
                 watched = resolve_watch_files(&entries)?;
                 let later = read_stamps(&watched);
                 for p in changed_files(&next, &later) {
@@ -663,11 +723,14 @@ fn main() {
     };
 
     let result = match cmd.as_str() {
-        "build" => parse_optional_entry(&rest).and_then(|entry| run_build(&ws, entry)),
+        "validate" => parse_optional_entry(&rest).and_then(|entry| run_validate(&ws, entry)),
+        "build" | "generate" => parse_optional_entry(&rest).and_then(|entry| run_build(&ws, entry)),
         "check" => parse_optional_entry(&rest).and_then(|entry| run_check(&ws, entry)),
         "diff" => parse_optional_entry(&rest).and_then(|entry| run_diff(&ws, entry)),
         "print" => parse_required_entry(&rest).and_then(|entry| run_print(&ws, entry)),
-        "watch" => parse_optional_entry(&rest).and_then(|entry| run_watch(&ws, entry)),
+        "watch" => {
+            parse_watch_args(&rest).and_then(|(entry, interval)| run_watch(&ws, entry, interval))
+        }
         "init" => run_init(&ws, &rest),
         _ => {
             usage();

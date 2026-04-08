@@ -71,7 +71,10 @@ flowchart TD
 
 ## CLI Command Semantics
 
-- `tcon build [--entry <file.tcon>]`
+- `tcon validate [--entry <file.tcon>]`
+  - Runs parse → eval → validate → emit **in memory only** (no writes to `spec.path`).
+  - Exit `0` when all entries compile; intended for CI compile-only gates.
+- `tcon build` / `tcon generate [--entry <file.tcon>]`
   - Compiles one or all entries.
   - Writes generated files under paths defined in `spec.path`.
   - Exit `0` on success, non-zero on any compile/validation/write error.
@@ -85,8 +88,8 @@ flowchart TD
   - Exit non-zero when differences exist.
 - `tcon print --entry <file.tcon>`
   - Prints parsed export expressions for debugging parser output.
-- `tcon watch [--entry <file.tcon>]`
-  - Runs an initial build, then rebuilds when entry or transitive imported `.tcon` files change.
+- `tcon watch [--entry <file.tcon>] [--interval-ms <n>]`
+  - Runs an initial build, then polls entry + transitive imports and rebuilds on timestamp changes. Configurable poll interval (default 800 ms, minimum 100).
 - Global: `--error-format text|json`
   - Controls stderr output format for automation/tooling integration (`code/message/file/line/col` in JSON mode).
 - `tcon init [--preset <name>] [--force]`
