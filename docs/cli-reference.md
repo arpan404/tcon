@@ -44,7 +44,8 @@ Unknown subcommands that look like typos (e.g. `checl`) print `did you mean 'che
   - Scaffold starter `.tcon` templates.
   - Presets: `json`, `yaml`, `env`, `toml`, `properties`, `all`.
 - `tcon secrets`
-  - Audit the current git repository for exposed secret files. Checks git-tracked files and the staging area against known secret file patterns (`.env*`, `*.key`, `*.pem`, `credentials.json`, etc.) and reports gaps in `.gitignore`. Exits non-zero if any secret files are exposed.
+  - Audit the current git repository for exposed secrets. Checks git-tracked files and the staging area for risky file names (`.env*`, `*.key`, `*.pem`, `credentials.json`, etc.) and secret-like content (private key blocks, token/password-like assignments). Also reports common secret patterns not covered by git ignore rules.
+  - Exits non-zero if any tracked/staged secret exposure is detected.
 - `tcon --help`
 - `tcon --version`
 
@@ -61,7 +62,7 @@ See `docs/ci.md` for GitHub Actions and recommended `validate` / `check` workflo
 
 ### Marking schema fields as secret
 
-Use the `.secret()` modifier to mark a schema field as sensitive:
+Use the `.secret()` modifier to mark a **string schema field** as sensitive:
 
 ```ts
 export const schema = t.object({

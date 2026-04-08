@@ -527,6 +527,27 @@ pub fn validate_secret_fields(
     }
 }
 
+fn contains_unescaped_interpolation(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Escaped interpolation marker: $${ -> literal ${
+        if i + 2 < bytes.len()
+            && bytes[i] == b'$'
+            && bytes[i + 1] == b'$'
+            && bytes[i + 2] == b'{'
+        {
+            i += 3;
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 fn check_secret_expr(
     schema: &Schema,
     expr: &crate::model::Expr,
@@ -538,12 +559,14 @@ fn check_secret_expr(
     use crate::model::Key;
 
     if schema.is_secret() {
-        if let Expr::String(s, _) = expr
-            && !s.contains("${")
-        {
-            errors.push(format!(
-                "{file_name}: {path}: secret field must be sourced from an                  environment variable using ${{VAR_NAME}} interpolation,                  not a hardcoded literal"
-            ));
+        match expr {
+            Expr::String(s, _) if contains_unescaped_interpolation(s) => {}
+            Expr::String(_, _) => errors.push(format!(
+                "{file_name}: {path}: secret field must be sourced from an environment variable using ${{VAR_NAME}} interpolation, not a hardcoded literal"
+            )),
+            _ => errors.push(format!(
+                "{file_name}: {path}: secret field must be a string using ${{VAR_NAME}} interpolation"
+            )),
         }
         return;
     }

@@ -40,6 +40,14 @@ fn run(root: &Path, args: &[&str]) -> std::process::Output {
         .expect("spawn tcon")
 }
 
+fn run_git(root: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .expect("spawn git")
+}
+
 #[test]
 fn validate_compiles_without_writing_artifacts() {
     let root = mk_workspace("validate_cmd");
@@ -491,6 +499,45 @@ export const config = { labels: { env: "dev", region: "us" }, mode: "safe" };
     let json = fs::read_to_string(root.join("service.json")).expect("read output");
     assert!(json.contains("\"region\": \"us\""));
     assert!(json.contains("\"mode\": \"safe\""));
+}
+
+#[test]
+fn secrets_command_flags_tracked_env_file() {
+    let root = mk_plain_workspace("secrets_tracked_env");
+    let init = run_git(&root, &["init"]);
+    assert!(init.status.success(), "git init failed: {:?}", init);
+    write_file(&root.join(".env"), "DB_PASSWORD=supersecret\n");
+    let add = run_git(&root, &["add", ".env"]);
+    assert!(add.status.success(), "git add failed: {:?}", add);
+
+    let out = run(&root, &["secrets"]);
+    assert!(!out.status.success(), "secrets audit should fail");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(".env") && stdout.contains("tracked by git"),
+        "unexpected stdout: {stdout}"
+    );
+}
+
+#[test]
+fn secrets_command_flags_content_based_leak() {
+    let root = mk_plain_workspace("secrets_content");
+    let init = run_git(&root, &["init"]);
+    assert!(init.status.success(), "git init failed: {:?}", init);
+    write_file(
+        &root.join("config.yaml"),
+        "service:\n  token: ghp_super_secret_token_value\n",
+    );
+    let add = run_git(&root, &["add", "config.yaml"]);
+    assert!(add.status.success(), "git add failed: {:?}", add);
+
+    let out = run(&root, &["secrets"]);
+    assert!(!out.status.success(), "secrets audit should fail");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("config.yaml") && stdout.contains("secret-like content"),
+        "unexpected stdout: {stdout}"
+    );
 }
 
 #[test]

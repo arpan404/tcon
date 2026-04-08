@@ -1682,6 +1682,74 @@ export const config = { a: 1, b: "two", c: "three" };
 // --- ENV variable interpolation ---
 
 #[test]
+fn secret_modifier_only_valid_on_string_schema() {
+    let root = mk_workspace("secret_non_string_schema");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  password: t.number().secret(),
+}).strict();
+export const config = { password: 1234 };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "non-string .secret() must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(".secret() only valid on string schema"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn secret_string_rejects_hardcoded_literal() {
+    let root = mk_workspace("secret_hardcoded");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  password: t.string().secret(),
+}).strict();
+export const config = { password: "hunter2" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "hardcoded secret must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("secret field must be sourced from an environment variable"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn secret_string_accepts_env_interpolation() {
+    let root = mk_workspace("secret_env_ok");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  password: t.string().secret(),
+}).strict();
+export const config = { password: "${APP_PASSWORD}" };
+"#,
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_tcon"))
+        .args(["build", "--entry", "x.tcon"])
+        .current_dir(&root)
+        .env("APP_PASSWORD", "super-secret")
+        .output()
+        .expect("spawn");
+    assert!(out.status.success(), "secret interpolation should pass: {:?}", out);
+    let json = fs::read_to_string(root.join("out.json")).expect("read");
+    assert!(json.contains("super-secret"), "{json}");
+}
+
+#[test]
 fn env_interpolation_resolves_set_variable() {
     let root = mk_workspace("env_interp_ok");
     write_file(

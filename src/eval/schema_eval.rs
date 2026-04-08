@@ -342,8 +342,13 @@ fn apply_method(
             if !args.is_empty() {
                 return Err(format!("{file_name}: .secret() does not take arguments"));
             }
-            set_secret(schema, true);
-            Ok(())
+            match schema {
+                Schema::String { .. } => {
+                    set_secret(schema, true);
+                    Ok(())
+                }
+                _ => Err(format!("{file_name}: .secret() only valid on string schema")),
+            }
         }
         _ => Err(format!(
             "{file_name}: unsupported schema method .{method}()"

@@ -17,6 +17,7 @@ Recommended CI sequence when generated files are committed:
 ```bash
 tcon validate
 tcon check
+tcon secrets
 ```
 
 If you only want to ensure `.tcon` compiles (no committed outputs yet), use:
@@ -54,6 +55,9 @@ jobs:
 
       - name: Drift check (optional — when outputs are committed)
         run: tcon check
+
+      - name: Secrets audit
+        run: tcon secrets
 ```
 
 To run **without** installing the binary (slower but zero install step):

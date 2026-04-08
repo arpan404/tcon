@@ -1332,17 +1332,91 @@ fn matches_secret_pattern(path: &str) -> Option<&'static str> {
     None
 }
 
-/// Returns true if the given pattern already appears in .gitignore
-fn gitignore_covers(gitignore_content: &str, pattern: &str) -> bool {
-    let needle = pattern.trim_start_matches("**/").trim_start_matches('/');
-    gitignore_content
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.starts_with('#') && !l.is_empty())
-        .any(|l| {
-            let l = l.trim_start_matches('/');
-            l == needle || l == pattern
-        })
+fn looks_like_text(bytes: &[u8]) -> bool {
+    !bytes.contains(&0)
+}
+
+/// Lightweight content heuristics for likely leaked secrets.
+fn detect_secret_content(content: &str) -> Option<&'static str> {
+    if content.contains("-----BEGIN PRIVATE KEY-----")
+        || content.contains("-----BEGIN RSA PRIVATE KEY-----")
+        || content.contains("-----BEGIN OPENSSH PRIVATE KEY-----")
+        || content.contains("-----BEGIN EC PRIVATE KEY-----")
+    {
+        return Some("private key material in file content");
+    }
+
+    let lower = content.to_ascii_lowercase();
+    if lower.contains("aws_secret_access_key")
+        || lower.contains("aws_access_key_id")
+        || lower.contains("x-api-key")
+        || lower.contains("authorization: bearer ")
+    {
+        return Some("secret-like token in file content");
+    }
+
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') || t.starts_with("//") || t.starts_with(';') {
+            continue;
+        }
+        let mut parts = if let Some((k, v)) = t.split_once('=') {
+            Some((k.trim(), v.trim()))
+        } else if let Some((k, v)) = t.split_once(':') {
+            Some((k.trim(), v.trim()))
+        } else {
+            None
+        };
+        let Some((key, value)) = parts.take() else {
+            continue;
+        };
+        if value.is_empty() || value == "\"\"" || value == "''" {
+            continue;
+        }
+        let key_l = key.to_ascii_lowercase();
+        if key_l.contains("password")
+            || key_l.contains("passwd")
+            || key_l.contains("token")
+            || key_l.contains("api_key")
+            || key_l.contains("apikey")
+            || key_l.contains("secret")
+            || key_l.contains("private_key")
+            || key_l.contains("client_secret")
+            || key_l.contains("access_key")
+        {
+            return Some("secret-like key/value in file content");
+        }
+    }
+
+    None
+}
+
+fn read_secret_reason_for_file(git_root: &Path, rel_path: &str) -> Option<&'static str> {
+    let full = git_root.join(rel_path);
+    let bytes = fs::read(&full).ok()?;
+    if !looks_like_text(&bytes) {
+        return None;
+    }
+    let content = String::from_utf8_lossy(&bytes);
+    detect_secret_content(&content)
+}
+
+fn git_ignores_path(git_root: &Path, rel_path: &str) -> Result<bool, String> {
+    let out = std::process::Command::new("git")
+        .args(["check-ignore", "-q", rel_path])
+        .current_dir(git_root)
+        .output()
+        .map_err(|e| format!("git check-ignore failed for '{rel_path}': {e}"))?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        Some(code) => Err(format!(
+            "git check-ignore returned exit code {code} for '{rel_path}'"
+        )),
+        None => Err(format!(
+            "git check-ignore terminated by signal for '{rel_path}'"
+        )),
+    }
 }
 
 fn run_secrets_audit() -> Result<(), String> {
@@ -1393,49 +1467,53 @@ fn run_secrets_audit() -> Result<(), String> {
         .map(|l| l.to_string())
         .collect();
 
-    // ── 4. Read .gitignore files ─────────────────────────────────────────────
-    let root_gitignore_path = git_root.join(".gitignore");
-    let root_gitignore = fs::read_to_string(&root_gitignore_path).unwrap_or_default();
-
-    // ── 5. Collect findings ─────────────────────────────────────────────────
+    // ── 4. Collect findings ─────────────────────────────────────────────────
     let mut tracked_secrets: Vec<(String, &'static str)> = Vec::new();
     let mut staged_secrets: Vec<(String, &'static str)> = Vec::new();
+    let mut tracked_content_secrets: Vec<(String, &'static str)> = Vec::new();
+    let mut staged_content_secrets: Vec<(String, &'static str)> = Vec::new();
     let mut missing_gitignore: Vec<(&'static str, &'static str)> = Vec::new();
 
     for file in &tracked_files {
         if let Some(label) = matches_secret_pattern(file) {
             tracked_secrets.push((file.clone(), label));
         }
+        if let Some(reason) = read_secret_reason_for_file(&git_root, file) {
+            tracked_content_secrets.push((file.clone(), reason));
+        }
     }
     for file in &staged_files {
         if let Some(label) = matches_secret_pattern(file) {
             staged_secrets.push((file.clone(), label));
         }
+        if let Some(reason) = read_secret_reason_for_file(&git_root, file) {
+            staged_content_secrets.push((file.clone(), reason));
+        }
     }
 
-    // Check which common secret patterns are missing from .gitignore
-    let common_missing_checks: &[&str] = &[
-        ".env",
-        ".env.*",
-        ".env.local",
-        "*.pem",
-        "*.key",
-        "*.p12",
-        "*.pfx",
-        "*.jks",
-        "*.keystore",
-        "*.secret",
-        "secrets.yaml",
-        "secrets.yml",
-        "secrets.json",
-        "credentials.json",
-        "service-account.json",
-        "id_rsa",
-        "id_ed25519",
-        ".npmrc",
+    // Check whether common secret paths are ignored according to git ignore rules.
+    let common_missing_checks: &[(&str, &str)] = &[
+        (".env", ".env"),
+        (".env.*", ".env.local"),
+        (".env.local", ".env.local"),
+        ("*.pem", "secrets/server.pem"),
+        ("*.key", "secrets/server.key"),
+        ("*.p12", "secrets/cert.p12"),
+        ("*.pfx", "secrets/cert.pfx"),
+        ("*.jks", "secrets/keystore.jks"),
+        ("*.keystore", "secrets/app.keystore"),
+        ("*.secret", "secrets/app.secret"),
+        ("secrets.yaml", "secrets.yaml"),
+        ("secrets.yml", "secrets.yml"),
+        ("secrets.json", "secrets.json"),
+        ("credentials.json", "credentials.json"),
+        ("service-account.json", "service-account.json"),
+        ("id_rsa", "id_rsa"),
+        ("id_ed25519", "id_ed25519"),
+        (".npmrc", ".npmrc"),
     ];
-    for pat in common_missing_checks {
-        if !gitignore_covers(&root_gitignore, pat) {
+    for (pat, sample_path) in common_missing_checks {
+        if !git_ignores_path(&git_root, sample_path)? {
             let label = SECRET_PATTERNS
                 .iter()
                 .find(|(p, _)| *p == *pat)
@@ -1458,7 +1536,10 @@ fn run_secrets_audit() -> Result<(), String> {
     );
     println!();
 
-    let has_issues = !tracked_secrets.is_empty() || !staged_secrets.is_empty();
+    let has_issues = !tracked_secrets.is_empty()
+        || !staged_secrets.is_empty()
+        || !tracked_content_secrets.is_empty()
+        || !staged_content_secrets.is_empty();
 
     // Tracked secret files (committed — most severe)
     if tracked_secrets.is_empty() {
@@ -1498,6 +1579,42 @@ fn run_secrets_audit() -> Result<(), String> {
 
     println!();
 
+    // Tracked files with secret-like content (committed — most severe)
+    if tracked_content_secrets.is_empty() {
+        println!(
+            "{ok}✓{r}  No secret-like content found in git-tracked text files.",
+            ok = s.ok,
+            r = s.reset
+        );
+    } else {
+        println!(
+            "{bad}✗  {n} git-tracked file(s) contain secret-like content (CRITICAL):{r}",
+            bad = se.bad,
+            n = tracked_content_secrets.len(),
+            r = s.reset
+        );
+        for (file, reason) in &tracked_content_secrets {
+            println!(
+                "   {bad}{file}{r}  {d}({reason}){r}",
+                bad = se.bad,
+                d = s.dim,
+                r = s.reset
+            );
+        }
+        println!();
+        println!(
+            "  {warn}Fix:{r} Rotate leaked secrets, then remove from tracking if needed:",
+            warn = se.warn,
+            r = s.reset
+        );
+        for (file, _) in &tracked_content_secrets {
+            println!("    git rm --cached {file}");
+        }
+        println!("  And replace values with env interpolation (e.g. ${{VAR}}).");
+    }
+
+    println!();
+
     // Staged secret files (about to be committed — severe)
     if !staged_secrets.is_empty() {
         println!(
@@ -1528,22 +1645,50 @@ fn run_secrets_audit() -> Result<(), String> {
         println!();
     }
 
-    // Missing .gitignore patterns (advisory)
+    // Staged files with secret-like content (about to be committed — severe)
+    if !staged_content_secrets.is_empty() {
+        println!(
+            "{bad}✗  {n} staged file(s) contain secret-like content (CRITICAL):{r}",
+            bad = se.bad,
+            n = staged_content_secrets.len(),
+            r = s.reset
+        );
+        for (file, reason) in &staged_content_secrets {
+            println!(
+                "   {bad}{file}{r}  {d}({reason}){r}",
+                bad = se.bad,
+                d = s.dim,
+                r = s.reset
+            );
+        }
+        println!();
+        println!(
+            "  {warn}Fix:{r} Unstage, scrub file content, and rotate any exposed credentials:",
+            warn = se.warn,
+            r = s.reset
+        );
+        for (file, _) in &staged_content_secrets {
+            println!("    git reset HEAD {file}");
+        }
+        println!();
+    }
+
+    // Missing ignore coverage (advisory)
     if missing_gitignore.is_empty() {
         println!(
-            "{ok}✓{r}  .gitignore covers all common secret file patterns.",
+            "{ok}✓{r}  Git ignore rules cover all common secret file patterns.",
             ok = s.ok,
             r = s.reset
         );
     } else {
         println!(
-            "{warn}⚠  {n} common secret pattern(s) not in .gitignore:{r}",
+            "{warn}⚠  {n} common secret pattern(s) are not ignored by git:{r}",
             warn = se.warn,
             n = missing_gitignore.len(),
             r = s.reset
         );
         println!(
-            "  {d}Add to .gitignore to prevent accidental commits:{r}",
+            "  {d}Add rules to .gitignore (or your global excludes) to prevent accidental commits:{r}",
             d = s.dim,
             r = s.reset
         );
@@ -1565,7 +1710,10 @@ fn run_secrets_audit() -> Result<(), String> {
     if has_issues {
         Err(format!(
             "{} secret file(s) exposed in git tracking — see above to remediate",
-            tracked_secrets.len() + staged_secrets.len()
+            tracked_secrets.len()
+                + staged_secrets.len()
+                + tracked_content_secrets.len()
+                + staged_content_secrets.len()
         ))
     } else {
         println!(
