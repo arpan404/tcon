@@ -53,3 +53,12 @@ fn resolve_named_export<'a>(
         }
     }
 }
+
+/// Return the resolved (identifier-followed) raw config `Expr` without
+/// performing any env-var interpolation.  Used by the secret-field pre-check.
+pub fn raw_config_expr<'a>(
+    exports: &'a BTreeMap<String, Expr>,
+    file_name: &str,
+) -> Result<&'a Expr, String> {
+    resolve_named_export(exports, "config", file_name)
+}

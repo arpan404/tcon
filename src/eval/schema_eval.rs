@@ -60,12 +60,14 @@ fn build_base(
         "string" => Ok(Schema::String {
             default: None,
             optional: false,
+            secret: false,
             min: None,
             max: None,
         }),
         "number" => Ok(Schema::Number {
             default: None,
             optional: false,
+            secret: false,
             min: None,
             max: None,
             int: false,
@@ -73,6 +75,7 @@ fn build_base(
         "boolean" | "bool" => Ok(Schema::Boolean {
             default: None,
             optional: false,
+            secret: false,
         }),
         "object" => {
             if args.len() != 1 {
@@ -95,6 +98,7 @@ fn build_base(
                 strict: false,
                 default: None,
                 optional: false,
+                secret: false,
             })
         }
         "array" => {
@@ -105,6 +109,7 @@ fn build_base(
                 item: Box::new(eval_chain(&args[0], exports, file_name)?),
                 default: None,
                 optional: false,
+                secret: false,
             })
         }
         "record" => {
@@ -115,6 +120,7 @@ fn build_base(
                 value: Box::new(eval_chain(&args[0], exports, file_name)?),
                 default: None,
                 optional: false,
+                secret: false,
             })
         }
         "literal" => {
@@ -128,6 +134,7 @@ fn build_base(
                         value,
                         default: None,
                         optional: false,
+                        secret: false,
                     })
                 }
                 _ => Err(format!(
@@ -168,6 +175,7 @@ fn build_base(
                 variants,
                 default: None,
                 optional: false,
+                secret: false,
             })
         }
         "union" => {
@@ -192,6 +200,7 @@ fn build_base(
                 variants,
                 default: None,
                 optional: false,
+                secret: false,
             })
         }
         _ => Err(format!(
@@ -329,9 +338,30 @@ fn apply_method(
             }
             Ok(())
         }
+        "secret" => {
+            if !args.is_empty() {
+                return Err(format!("{file_name}: .secret() does not take arguments"));
+            }
+            set_secret(schema, true);
+            Ok(())
+        }
         _ => Err(format!(
             "{file_name}: unsupported schema method .{method}()"
         )),
+    }
+}
+
+fn set_secret(schema: &mut Schema, secret: bool) {
+    match schema {
+        Schema::String { secret: s, .. }
+        | Schema::Number { secret: s, .. }
+        | Schema::Boolean { secret: s, .. }
+        | Schema::Object { secret: s, .. }
+        | Schema::Array { secret: s, .. }
+        | Schema::Record { secret: s, .. }
+        | Schema::Literal { secret: s, .. }
+        | Schema::Enum { secret: s, .. }
+        | Schema::Union { secret: s, .. } => *s = secret,
     }
 }
 

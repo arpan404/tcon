@@ -79,6 +79,7 @@ fn validate_node(
         Schema::String {
             default,
             optional,
+            secret: _,
             min,
             max,
         } => {
@@ -126,6 +127,7 @@ fn validate_node(
         Schema::Number {
             default,
             optional,
+            secret: _,
             min,
             max,
             int,
@@ -195,7 +197,7 @@ fn validate_node(
             Value::Number(n.clone())
         }
 
-        Schema::Boolean { default, optional } => {
+        Schema::Boolean { default, optional, secret: _ } => {
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
@@ -221,6 +223,7 @@ fn validate_node(
             item,
             default,
             optional,
+            secret: _,
         } => {
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
@@ -258,6 +261,7 @@ fn validate_node(
             value,
             default,
             optional,
+            secret: _,
         } => {
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
@@ -293,6 +297,7 @@ fn validate_node(
             strict,
             default,
             optional,
+            secret: _,
         } => {
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
@@ -367,6 +372,7 @@ fn validate_node(
             variants,
             default,
             optional,
+            secret: _,
         } => {
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
@@ -408,6 +414,7 @@ fn validate_node(
             value: literal,
             default,
             optional,
+            secret: _,
         } => {
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
@@ -437,6 +444,7 @@ fn validate_node(
             variants,
             default,
             optional,
+            secret: _,
         } => {
             let value = match (provided, default) {
                 (Some(v), _) => Some(v),
@@ -498,4 +506,65 @@ fn fmt_value(v: &Value) -> String {
 
 fn push_err(errors: &mut Vec<String>, file_name: &str, path: &str, msg: &str) {
     errors.push(format!("{file_name}: {path}: {msg}"));
+}
+
+/// Check that any schema fields marked `.secret()` are sourced from env-var
+/// interpolation (`${VAR_NAME}`) rather than hardcoded literals.
+///
+/// Called before evaluation with the raw config `Expr` tree so that we can
+/// inspect the unresolved source text.
+pub fn validate_secret_fields(
+    schema: &Schema,
+    expr: &crate::model::Expr,
+    file_name: &str,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    check_secret_expr(schema, expr, "config", file_name, &mut errors);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
+}
+
+fn check_secret_expr(
+    schema: &Schema,
+    expr: &crate::model::Expr,
+    path: &str,
+    file_name: &str,
+    errors: &mut Vec<String>,
+) {
+    use crate::model::Expr;
+    use crate::model::Key;
+
+    if schema.is_secret() {
+        if let Expr::String(s, _) = expr
+            && !s.contains("${")
+        {
+            errors.push(format!(
+                "{file_name}: {path}: secret field must be sourced from an                  environment variable using ${{VAR_NAME}} interpolation,                  not a hardcoded literal"
+            ));
+        }
+        return;
+    }
+
+    // Recurse into object fields.
+    if let Schema::Object { fields, .. } = schema
+        && let Expr::Object(kv_pairs, _) = expr
+    {
+        for (k, v, _) in kv_pairs {
+            let key_name = match k {
+                Key::Ident(s) | Key::String(s) => s.as_str(),
+            };
+            if let Some(field_schema) = fields.get(key_name) {
+                check_secret_expr(
+                    field_schema,
+                    v,
+                    &format!("{path}.{key_name}"),
+                    file_name,
+                    errors,
+                );
+            }
+        }
+    }
 }

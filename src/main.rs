@@ -12,11 +12,12 @@ use crate::emit::json::to_pretty_json;
 use crate::emit::properties::to_properties;
 use crate::emit::toml::to_toml;
 use crate::emit::yaml::to_yaml;
-use crate::eval::{evaluate_config, evaluate_schema, evaluate_spec};
+use crate::eval::{evaluate_config, evaluate_schema, evaluate_spec, raw_config_expr};
+use crate::model::{Schema, Value};
 use crate::tcon::loader::{
     LoadCache, collect_dependency_files, load_program_cached, load_unresolved_program,
 };
-use crate::validate::validator::{validate, validate_schema_defaults};
+use crate::validate::validator::{validate, validate_schema_defaults, validate_secret_fields};
 use crate::workspace::Workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -101,6 +102,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 fn suggest_similar_command(input: &str) -> Option<&'static str> {
     const COMMANDS: &[&str] = &[
         "validate", "build", "generate", "check", "diff", "status", "print", "watch", "init",
+        "secrets",
     ];
     let threshold = match input.chars().count() {
         0..3 => 0,
@@ -268,6 +270,10 @@ fn usage() {
         "init",
         "Scaffold samples under `.tcon/`. Flags: `--preset`, `--force`.",
     );
+    cmd(
+        "secrets",
+        "Audit git-tracked files for exposed secrets (.env, *.key, *.pem, etc.) and .gitignore gaps.",
+    );
     eprintln!();
     eprintln!("{bold}COMMON ARGS{sreset}", bold = s.bold, sreset = s.reset);
     eprintln!(
@@ -300,7 +306,7 @@ fn usage() {
     );
     eprintln!();
     eprintln!(
-        "{dim}validate = sources only · check = sources vs on-disk outputs · docs/cli-reference.md · NO_COLOR=1 · CLICOLOR=0{sreset}",
+        "{dim}validate = sources only · check = sources vs on-disk outputs · docs/cli-reference.md · NO_COLOR=1 · CLICOLOR=0 · tcon secrets for git exposure audit{sreset}",
         dim = s.dim,
         sreset = s.reset
     );
@@ -446,6 +452,8 @@ fn compile_entry(
     }
     let schema = evaluate_schema(&exports, &file_name)?;
     validate_schema_defaults(&schema, &file_name)?;
+    let raw_cfg = raw_config_expr(&exports, &file_name)?;
+    validate_secret_fields(&schema, raw_cfg, &file_name)?;
     let cfg = evaluate_config(&exports, &file_name)?;
     let normalized = validate(&schema, &cfg, &file_name)?;
     let output_path = ws.root.join(&spec.path);
@@ -744,10 +752,67 @@ fn run_diff(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
     }
 }
 
+fn redact_secrets(value: &Value, schema: &Schema) -> Value {
+    match (schema, value) {
+        (Schema::Object { fields, secret: false, .. }, Value::Object(map)) => {
+            let mut out = std::collections::BTreeMap::new();
+            for (k, v) in map {
+                let redacted = if let Some(fs) = fields.get(k) {
+                    redact_secrets(v, fs)
+                } else {
+                    v.clone()
+                };
+                out.insert(k.clone(), redacted);
+            }
+            Value::Object(out)
+        }
+        (schema, _v) if schema.is_secret() => Value::String("[secret]".to_string()),
+        (_, v) => v.clone(),
+    }
+}
+
 fn run_print(ws: &Workspace, entry: &str) -> Result<(), String> {
     let path = ws.resolve_entry(entry)?;
+    let s = Theme::for_stdout();
+    let file_name = path.display().to_string();
+
+    // Raw AST (existing debug behavior)
     let program = load_unresolved_program(&path)?;
+    println!("{bold}── raw AST ──{r}", bold = s.bold, r = s.reset);
     println!("{program:#?}");
+
+    // Evaluated output with secrets redacted
+    let mut cache = LoadCache::default();
+    let exports = load_program_cached(&path, &mut cache)?;
+    match evaluate_schema(&exports, &file_name) {
+        Ok(schema) => {
+            match evaluate_config(&exports, &file_name) {
+                Ok(cfg) => {
+                    match validate(&schema, &cfg, &file_name) {
+                        Ok(normalized) => {
+                            let display = redact_secrets(&normalized, &schema);
+                            println!();
+                            println!("{bold}── evaluated config (secrets redacted) ──{r}", bold = s.bold, r = s.reset);
+                            println!("{display:#?}");
+                        }
+                        Err(e) => {
+                            println!();
+                            println!("{warn}── evaluated config (validation failed) ──{r}", warn = s.warn, r = s.reset);
+                            println!("{e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!();
+                    println!("{d}(config evaluation skipped: {e}){r}", d = s.dim, r = s.reset);
+                }
+            }
+        }
+        Err(e) => {
+            println!();
+            println!("{d}(schema evaluation skipped: {e}){r}", d = s.dim, r = s.reset);
+        }
+    }
     Ok(())
 }
 
@@ -1199,6 +1264,320 @@ export const config = {
 "#
 }
 
+// ─── secrets audit ───────────────────────────────────────────────────────────
+
+/// Patterns for files that commonly carry secrets and should NOT be git-tracked.
+const SECRET_PATTERNS: &[(&str, &str)] = &[
+    (".env",          "environment variable file"),
+    (".env.local",    "local environment overrides"),
+    (".env.dev",      "dev environment file"),
+    (".env.prod",     "production environment file"),
+    (".env.staging",  "staging environment file"),
+    (".env.test",     "test environment file"),
+    (".env.example",  "example env (may contain real values)"),
+    (".envrc",        "direnv file"),
+    ("*.pem",         "PEM certificate/key"),
+    ("*.key",         "private key"),
+    ("*.p12",         "PKCS#12 keystore"),
+    ("*.pfx",         "PFX certificate"),
+    ("*.jks",         "Java KeyStore"),
+    ("*.keystore",    "keystore file"),
+    ("id_rsa",        "RSA private key"),
+    ("id_ed25519",    "Ed25519 private key"),
+    ("id_ecdsa",      "ECDSA private key"),
+    ("id_dsa",        "DSA private key"),
+    ("secrets.yaml",  "secrets manifest"),
+    ("secrets.yml",   "secrets manifest"),
+    ("secrets.json",  "secrets manifest"),
+    ("secrets.toml",  "secrets manifest"),
+    ("credentials",   "credentials file"),
+    ("credentials.json", "credentials file"),
+    ("service-account.json", "GCP service account key"),
+    ("*.secret",      "generic secret file"),
+    (".npmrc",        "npm registry config (may contain tokens)"),
+    (".pypirc",       "PyPI credentials"),
+    ("htpasswd",      "Apache password file"),
+    (".htpasswd",     "Apache password file"),
+    ("vault.hcl",     "HashiCorp Vault config"),
+    ("vault.yml",     "HashiCorp Vault config"),
+];
+
+/// Check whether a file path matches any of the secret patterns (glob-style
+/// suffix/basename matching only — no recursive glob expansion needed here
+/// because `git ls-files` already returns full relative paths).
+fn matches_secret_pattern(path: &str) -> Option<&'static str> {
+    let basename = path.rsplit('/').next().unwrap_or(path);
+    let lower_base = basename.to_ascii_lowercase();
+    let lower_path = path.to_ascii_lowercase();
+
+    for (pattern, label) in SECRET_PATTERNS {
+        if pattern.starts_with("*.") {
+            // Suffix glob: match any file with this extension.
+            let ext = &pattern[1..]; // includes the dot
+            if lower_base.ends_with(ext) {
+                return Some(label);
+            }
+        } else {
+            // Exact basename or known file name match.
+            let lower_pat = pattern.to_ascii_lowercase();
+            if lower_base == lower_pat || lower_path.ends_with(&format!("/{lower_pat}")) {
+                return Some(label);
+            }
+            // Also match .env.* variants
+            if lower_pat == ".env" && lower_base.starts_with(".env") {
+                return Some(label);
+            }
+        }
+    }
+    None
+}
+
+/// Returns true if the given pattern already appears in .gitignore
+fn gitignore_covers(gitignore_content: &str, pattern: &str) -> bool {
+    let needle = pattern.trim_start_matches("**/").trim_start_matches('/');
+    gitignore_content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .any(|l| {
+            let l = l.trim_start_matches('/');
+            l == needle || l == pattern
+        })
+}
+
+fn run_secrets_audit() -> Result<(), String> {
+    let s = Theme::for_stdout();
+    let se = Theme::for_stderr();
+
+    // ── 1. Check git is available and we're in a repo ──────────────────────
+    let cwd = std::env::current_dir()
+        .map_err(|e| format!("failed to read current directory: {e}"))?;
+    let git_root_out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&cwd)
+        .output()
+        .map_err(|e| format!("failed to run git: {e} (is git installed?)"))?;
+
+    if !git_root_out.status.success() {
+        return Err(
+            "not inside a git repository — secrets audit requires a git repo".to_string(),
+        );
+    }
+    let git_root = PathBuf::from(
+        String::from_utf8_lossy(&git_root_out.stdout)
+            .trim()
+            .to_string(),
+    );
+
+    // ── 2. Get all git-tracked files ────────────────────────────────────────
+    let ls_files_out = std::process::Command::new("git")
+        .args(["ls-files"])
+        .current_dir(&git_root)
+        .output()
+        .map_err(|e| format!("git ls-files failed: {e}"))?;
+
+    let tracked_files: Vec<String> = String::from_utf8_lossy(&ls_files_out.stdout)
+        .lines()
+        .map(|l| l.to_string())
+        .collect();
+
+    // ── 3. Check for staged (but not yet committed) secret files ────────────
+    let staged_out = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only"])
+        .current_dir(&git_root)
+        .output()
+        .map_err(|e| format!("git diff --cached failed: {e}"))?;
+
+    let staged_files: Vec<String> = String::from_utf8_lossy(&staged_out.stdout)
+        .lines()
+        .map(|l| l.to_string())
+        .collect();
+
+    // ── 4. Read .gitignore files ─────────────────────────────────────────────
+    let root_gitignore_path = git_root.join(".gitignore");
+    let root_gitignore = fs::read_to_string(&root_gitignore_path).unwrap_or_default();
+
+    // ── 5. Collect findings ─────────────────────────────────────────────────
+    let mut tracked_secrets: Vec<(String, &'static str)> = Vec::new();
+    let mut staged_secrets: Vec<(String, &'static str)> = Vec::new();
+    let mut missing_gitignore: Vec<(&'static str, &'static str)> = Vec::new();
+
+    for file in &tracked_files {
+        if let Some(label) = matches_secret_pattern(file) {
+            tracked_secrets.push((file.clone(), label));
+        }
+    }
+    for file in &staged_files {
+        if let Some(label) = matches_secret_pattern(file) {
+            staged_secrets.push((file.clone(), label));
+        }
+    }
+
+    // Check which common secret patterns are missing from .gitignore
+    let common_missing_checks: &[&str] = &[
+        ".env",
+        ".env.*",
+        ".env.local",
+        "*.pem",
+        "*.key",
+        "*.p12",
+        "*.pfx",
+        "*.jks",
+        "*.keystore",
+        "*.secret",
+        "secrets.yaml",
+        "secrets.yml",
+        "secrets.json",
+        "credentials.json",
+        "service-account.json",
+        "id_rsa",
+        "id_ed25519",
+        ".npmrc",
+    ];
+    for pat in common_missing_checks {
+        if !gitignore_covers(&root_gitignore, pat) {
+            let label = SECRET_PATTERNS
+                .iter()
+                .find(|(p, _)| *p == *pat)
+                .map(|(_, l)| *l)
+                .unwrap_or("secret file pattern");
+            missing_gitignore.push((pat, label));
+        }
+    }
+
+    // ── 6. Print report ──────────────────────────────────────────────────────
+    println!(
+        "{ti}tcon secrets audit{r}",
+        ti = s.title,
+        r = s.reset
+    );
+    println!(
+        "{d}Scans git-tracked files and .gitignore for exposed secrets.{r}",
+        d = s.dim,
+        r = s.reset
+    );
+    println!();
+
+    let has_issues = !tracked_secrets.is_empty() || !staged_secrets.is_empty();
+
+    // Tracked secret files (committed — most severe)
+    if tracked_secrets.is_empty() {
+        println!(
+            "{ok}✓{r}  No secret files found in git-tracked files.",
+            ok = s.ok,
+            r = s.reset
+        );
+    } else {
+        println!(
+            "{bad}✗  {n} secret file(s) are tracked by git (CRITICAL):{r}",
+            bad = se.bad,
+            n = tracked_secrets.len(),
+            r = s.reset
+        );
+        for (file, label) in &tracked_secrets {
+            println!(
+                "   {bad}{file}{r}  {d}({label}){r}",
+                bad = se.bad,
+                file = file,
+                label = label,
+                d = s.dim,
+                r = s.reset
+            );
+        }
+        println!();
+        println!(
+            "  {warn}Fix:{r} Remove from tracking with:",
+            warn = se.warn,
+            r = s.reset
+        );
+        for (file, _) in &tracked_secrets {
+            println!("    git rm --cached {file}");
+        }
+        println!("  Then add to .gitignore and commit the removal.");
+    }
+
+    println!();
+
+    // Staged secret files (about to be committed — severe)
+    if !staged_secrets.is_empty() {
+        println!(
+            "{bad}✗  {n} secret file(s) are staged for commit (CRITICAL):{r}",
+            bad = se.bad,
+            n = staged_secrets.len(),
+            r = s.reset
+        );
+        for (file, label) in &staged_secrets {
+            println!(
+                "   {bad}{file}{r}  {d}({label}){r}",
+                bad = se.bad,
+                file = file,
+                label = label,
+                d = s.dim,
+                r = s.reset
+            );
+        }
+        println!();
+        println!(
+            "  {warn}Fix:{r} Unstage and add to .gitignore:",
+            warn = se.warn,
+            r = s.reset
+        );
+        for (file, _) in &staged_secrets {
+            println!("    git reset HEAD {file}");
+        }
+        println!();
+    }
+
+    // Missing .gitignore patterns (advisory)
+    if missing_gitignore.is_empty() {
+        println!(
+            "{ok}✓{r}  .gitignore covers all common secret file patterns.",
+            ok = s.ok,
+            r = s.reset
+        );
+    } else {
+        println!(
+            "{warn}⚠  {n} common secret pattern(s) not in .gitignore:{r}",
+            warn = se.warn,
+            n = missing_gitignore.len(),
+            r = s.reset
+        );
+        println!(
+            "  {d}Add to .gitignore to prevent accidental commits:{r}",
+            d = s.dim,
+            r = s.reset
+        );
+        for (pat, label) in &missing_gitignore {
+            println!(
+                "   {warn}{pat}{r}  {d}# {label}{r}",
+                warn = se.warn,
+                pat = pat,
+                label = label,
+                d = s.dim,
+                r = s.reset
+            );
+        }
+    }
+
+    println!();
+
+    // ── 7. Summary & exit code ───────────────────────────────────────────────
+    if has_issues {
+        Err(format!(
+            "{} secret file(s) exposed in git tracking — see above to remediate",
+            tracked_secrets.len() + staged_secrets.len()
+        ))
+    } else {
+        println!(
+            "{ok}Secrets audit passed.{r}  No exposed secret files detected.",
+            ok = s.ok,
+            r = s.reset
+        );
+        Ok(())
+    }
+}
+
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let (error_format, quiet, cmd, rest) = match parse_global_args(&args) {
@@ -1216,6 +1595,15 @@ fn main() {
     }
     if cmd == "version" || cmd == "--version" || cmd == "-V" {
         print_version();
+        return;
+    }
+
+    if cmd == "secrets" {
+        let result = run_secrets_audit();
+        if let Err(e) = result {
+            print_error(error_format, &e);
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -1246,6 +1634,7 @@ fn main() {
             parse_watch_args(&rest).and_then(|(entry, interval)| run_watch(&ws, entry, interval))
         }
         "init" => run_init(&ws, &rest),
+        "secrets" => run_secrets_audit(),
         _ => {
             usage();
             let mut msg = format!("unknown command: {cmd}");

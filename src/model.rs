@@ -61,12 +61,14 @@ pub enum Schema {
     String {
         default: Option<Value>,
         optional: bool,
+        secret: bool,
         min: Option<f64>,
         max: Option<f64>,
     },
     Number {
         default: Option<Value>,
         optional: bool,
+        secret: bool,
         min: Option<f64>,
         max: Option<f64>,
         int: bool,
@@ -74,38 +76,61 @@ pub enum Schema {
     Boolean {
         default: Option<Value>,
         optional: bool,
+        secret: bool,
     },
     Object {
         fields: BTreeMap<String, Schema>,
         strict: bool,
         default: Option<Value>,
         optional: bool,
+        secret: bool,
     },
     Array {
         item: Box<Schema>,
         default: Option<Value>,
         optional: bool,
+        secret: bool,
     },
     Record {
         value: Box<Schema>,
         default: Option<Value>,
         optional: bool,
+        secret: bool,
     },
     Literal {
         value: Value,
         default: Option<Value>,
         optional: bool,
+        secret: bool,
     },
     Enum {
         variants: Vec<String>,
         default: Option<Value>,
         optional: bool,
+        secret: bool,
     },
     Union {
         variants: Vec<Schema>,
         default: Option<Value>,
         optional: bool,
+        secret: bool,
     },
+}
+
+impl Schema {
+    pub fn is_secret(&self) -> bool {
+        match self {
+            Schema::String { secret, .. }
+            | Schema::Number { secret, .. }
+            | Schema::Boolean { secret, .. }
+            | Schema::Object { secret, .. }
+            | Schema::Array { secret, .. }
+            | Schema::Record { secret, .. }
+            | Schema::Literal { secret, .. }
+            | Schema::Enum { secret, .. }
+            | Schema::Union { secret, .. } => *secret,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
