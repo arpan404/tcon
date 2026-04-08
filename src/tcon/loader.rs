@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn load_program(path: &PathBuf) -> Result<(BTreeMap<String, Expr>, String), String> {
+pub fn load_program(path: &Path) -> Result<(BTreeMap<String, Expr>, String), String> {
     let mut stack = BTreeSet::new();
     let mut cache = BTreeMap::new();
     let exports = load_program_inner(path, &mut stack, &mut cache)?;
@@ -24,7 +24,10 @@ fn load_program_inner(
         return Ok(existing.clone());
     }
     if stack.contains(&canonical) {
-        return Err(format!("circular import detected at {}", canonical.display()));
+        return Err(format!(
+            "circular import detected at {}",
+            canonical.display()
+        ));
     }
     stack.insert(canonical.clone());
 
@@ -65,7 +68,6 @@ fn exports_map(
             }
             out.insert(name, expr.clone());
         }
-        let _span = import.span;
     }
 
     for ex in program.exports {
@@ -77,17 +79,18 @@ fn exports_map(
     Ok(out)
 }
 
-pub fn load_unresolved_program(path: &PathBuf) -> Result<Program, String> {
+pub fn load_unresolved_program(path: &Path) -> Result<Program, String> {
     let file_name = path.display().to_string();
-    let src = fs::read_to_string(path).map_err(|e| format!("{}: failed to read: {}", file_name, e))?;
+    let src =
+        fs::read_to_string(path).map_err(|e| format!("{}: failed to read: {}", file_name, e))?;
     let tokens = lex(&src, &file_name)?;
     parse(&tokens, &file_name, &src)
 }
 
-pub fn collect_dependency_files(entry: &PathBuf) -> Result<Vec<PathBuf>, String> {
+pub fn collect_dependency_files(entry: &Path) -> Result<Vec<PathBuf>, String> {
     let mut visiting = BTreeSet::new();
     let mut seen = BTreeSet::new();
-    dependency_dfs(entry.as_path(), &mut visiting, &mut seen)?;
+    dependency_dfs(entry, &mut visiting, &mut seen)?;
     Ok(seen.into_iter().collect())
 }
 
@@ -102,7 +105,10 @@ fn dependency_dfs(
         return Ok(());
     }
     if visiting.contains(&canonical) {
-        return Err(format!("circular import detected at {}", canonical.display()));
+        return Err(format!(
+            "circular import detected at {}",
+            canonical.display()
+        ));
     }
     visiting.insert(canonical.clone());
     seen.insert(canonical.clone());
@@ -129,10 +135,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "tcon_loader_{name}_{nanos}_{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("tcon_loader_{name}_{nanos}_{}", std::process::id()));
         fs::create_dir_all(root.join(".tcon")).expect("create .tcon");
         root
     }

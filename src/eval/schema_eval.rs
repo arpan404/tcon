@@ -10,7 +10,9 @@ fn eval_chain(expr: &Expr, file_name: &str) -> Result<Schema, String> {
     match expr {
         Expr::Call(callee, args, _) => match callee.as_ref() {
             Expr::Member(base, method, _) => {
-                if let Expr::Ident(root, _) = base.as_ref() && root == "t" {
+                if let Expr::Ident(root, _) = base.as_ref()
+                    && root == "t"
+                {
                     build_base(method, args, file_name)
                 } else {
                     let mut schema = eval_chain(base, file_name)?;
@@ -52,7 +54,9 @@ fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, Stri
                 return Err(format!("{file_name}: t.object() expects one argument"));
             }
             let Expr::Object(fields, _) = &args[0] else {
-                return Err(format!("{file_name}: t.object() argument must be an object"));
+                return Err(format!(
+                    "{file_name}: t.object() argument must be an object"
+                ));
             };
             let mut out = BTreeMap::new();
             for (k, v, _) in fields {
@@ -78,13 +82,69 @@ fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, Stri
                 optional: false,
             })
         }
+        "enum" => {
+            if args.len() != 1 {
+                return Err(format!("{file_name}: t.enum() expects one argument"));
+            }
+            let Expr::Array(items, _) = &args[0] else {
+                return Err(format!("{file_name}: t.enum() expects an array of strings"));
+            };
+            let mut variants = Vec::with_capacity(items.len());
+            for (item, _) in items {
+                let Expr::String(s, _) = item else {
+                    return Err(format!(
+                        "{file_name}: t.enum() only supports string variants"
+                    ));
+                };
+                variants.push(s.clone());
+            }
+            if variants.is_empty() {
+                return Err(format!(
+                    "{file_name}: t.enum() requires at least one variant"
+                ));
+            }
+            Ok(Schema::Enum {
+                variants,
+                default: None,
+                optional: false,
+            })
+        }
+        "union" => {
+            if args.len() != 1 {
+                return Err(format!("{file_name}: t.union() expects one argument"));
+            }
+            let Expr::Array(items, _) = &args[0] else {
+                return Err(format!(
+                    "{file_name}: t.union() expects an array of schemas"
+                ));
+            };
+            let mut variants = Vec::with_capacity(items.len());
+            for (item, _) in items {
+                variants.push(eval_chain(item, file_name)?);
+            }
+            if variants.len() < 2 {
+                return Err(format!(
+                    "{file_name}: t.union() requires at least two schema variants"
+                ));
+            }
+            Ok(Schema::Union {
+                variants,
+                default: None,
+                optional: false,
+            })
+        }
         _ => Err(format!(
             "{file_name}: unsupported schema root constructor t.{name}()"
         )),
     }
 }
 
-fn apply_method(schema: &mut Schema, method: &str, args: &[Expr], file_name: &str) -> Result<(), String> {
+fn apply_method(
+    schema: &mut Schema,
+    method: &str,
+    args: &[Expr],
+    file_name: &str,
+) -> Result<(), String> {
     match method {
         "optional" => {
             if !args.is_empty() {
@@ -111,7 +171,9 @@ fn apply_method(schema: &mut Schema, method: &str, args: &[Expr], file_name: &st
                     *min = Some(n);
                     Ok(())
                 }
-                _ => Err(format!("{file_name}: .min() not supported for this schema type")),
+                _ => Err(format!(
+                    "{file_name}: .min() not supported for this schema type"
+                )),
             }
         }
         "max" => {
@@ -124,7 +186,9 @@ fn apply_method(schema: &mut Schema, method: &str, args: &[Expr], file_name: &st
                     *max = Some(n);
                     Ok(())
                 }
-                _ => Err(format!("{file_name}: .max() not supported for this schema type")),
+                _ => Err(format!(
+                    "{file_name}: .max() not supported for this schema type"
+                )),
             }
         }
         "int" => match schema {
@@ -139,9 +203,13 @@ fn apply_method(schema: &mut Schema, method: &str, args: &[Expr], file_name: &st
                 *strict = true;
                 Ok(())
             }
-            _ => Err(format!("{file_name}: .strict() only valid on object schema")),
+            _ => Err(format!(
+                "{file_name}: .strict() only valid on object schema"
+            )),
         },
-        _ => Err(format!("{file_name}: unsupported schema method .{method}()")),
+        _ => Err(format!(
+            "{file_name}: unsupported schema method .{method}()"
+        )),
     }
 }
 
@@ -160,7 +228,9 @@ fn set_optional(schema: &mut Schema, optional: bool) {
         | Schema::Number { optional: o, .. }
         | Schema::Boolean { optional: o, .. }
         | Schema::Object { optional: o, .. }
-        | Schema::Array { optional: o, .. } => *o = optional,
+        | Schema::Array { optional: o, .. }
+        | Schema::Enum { optional: o, .. }
+        | Schema::Union { optional: o, .. } => *o = optional,
     }
 }
 
@@ -170,6 +240,8 @@ fn set_default(schema: &mut Schema, value: Value) {
         | Schema::Number { default, .. }
         | Schema::Boolean { default, .. }
         | Schema::Object { default, .. }
-        | Schema::Array { default, .. } => *default = Some(value),
+        | Schema::Array { default, .. }
+        | Schema::Enum { default, .. }
+        | Schema::Union { default, .. } => *default = Some(value),
     }
 }

@@ -27,10 +27,14 @@ fn validate_inner(
             let Value::String(s) = v else {
                 return err(file_name, path, "expected string");
             };
-            if let Some(m) = min && (s.chars().count() as f64) < *m {
+            if let Some(m) = min
+                && (s.chars().count() as f64) < *m
+            {
                 return err(file_name, path, "string shorter than min");
             }
-            if let Some(m) = max && (s.chars().count() as f64) > *m {
+            if let Some(m) = max
+                && (s.chars().count() as f64) > *m
+            {
                 return err(file_name, path, "string longer than max");
             }
             Ok(Value::String(s))
@@ -54,10 +58,14 @@ fn validate_inner(
             let parsed = n
                 .parse::<f64>()
                 .map_err(|_| format!("{file_name}: {path}: invalid number"))?;
-            if let Some(m) = min && parsed < *m {
+            if let Some(m) = min
+                && parsed < *m
+            {
                 return err(file_name, path, "number smaller than min");
             }
-            if let Some(m) = max && parsed > *m {
+            if let Some(m) = max
+                && parsed > *m
+            {
                 return err(file_name, path, "number larger than max");
             }
             if *int && parsed.fract() != 0.0 {
@@ -139,6 +147,49 @@ fn validate_inner(
             }
 
             Ok(Value::Object(out))
+        }
+        Schema::Enum {
+            variants,
+            default,
+            optional,
+        } => {
+            let v = match (provided, default) {
+                (Some(v), _) => v.clone(),
+                (None, Some(d)) => d.clone(),
+                (None, None) if *optional => return Ok(Value::Null),
+                (None, None) => return err(file_name, path, "required enum field is missing"),
+            };
+            let Value::String(s) = v else {
+                return err(file_name, path, "expected enum string value");
+            };
+            if !variants.iter().any(|v| v == &s) {
+                return err(file_name, path, "enum value not in allowed variants");
+            }
+            Ok(Value::String(s))
+        }
+        Schema::Union {
+            variants,
+            default,
+            optional,
+        } => {
+            let value = match (provided, default) {
+                (Some(v), _) => Some(v),
+                (None, Some(d)) => Some(d),
+                (None, None) if *optional => None,
+                (None, None) => return err(file_name, path, "required union field is missing"),
+            };
+            let Some(value) = value else {
+                return Ok(Value::Null);
+            };
+            let mut last_error = None;
+            for variant in variants {
+                match validate_inner(variant, Some(value), path, file_name) {
+                    Ok(v) => return Ok(v),
+                    Err(e) => last_error = Some(e),
+                }
+            }
+            Err(last_error
+                .unwrap_or_else(|| format!("{file_name}: {path}: union did not match any variant")))
         }
     }
 }

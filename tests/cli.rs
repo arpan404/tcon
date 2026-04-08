@@ -160,3 +160,41 @@ export const config = { port: @ };
     assert!(stderr.contains("-->"), "{stderr}");
     assert!(stderr.contains("^"), "{stderr}");
 }
+
+#[test]
+fn discovers_nested_entries() {
+    let root = mk_workspace("nested");
+    write_file(
+        &root.join(".tcon/api/server.tcon"),
+        r#"
+export const spec = { path: "server.json", format: "json" };
+export const schema = t.object({ port: t.number().default(8080) }).strict();
+export const config = { port: 3000 };
+"#,
+    );
+    let out = run(&root, &["build"]);
+    assert!(out.status.success(), "nested build failed: {:?}", out);
+    let json = fs::read_to_string(root.join("server.json")).expect("read nested output");
+    assert!(json.contains("\"port\": 3000"));
+}
+
+#[test]
+fn enum_and_union_schemas_validate() {
+    let root = mk_workspace("enum_union");
+    write_file(
+        &root.join(".tcon/service.tcon"),
+        r#"
+export const spec = { path: "service.json", format: "json" };
+export const schema = t.object({
+  mode: t.enum(["dev", "prod"]).default("dev"),
+  level: t.union([t.number().int(), t.string()]).default("1"),
+}).strict();
+export const config = { mode: "prod", level: 3 };
+"#,
+    );
+    let ok = run(&root, &["build"]);
+    assert!(ok.status.success(), "enum/union build failed: {:?}", ok);
+    let json = fs::read_to_string(root.join("service.json")).expect("read output");
+    assert!(json.contains("\"mode\": \"prod\""));
+    assert!(json.contains("\"level\": 3"));
+}

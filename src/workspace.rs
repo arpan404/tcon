@@ -24,10 +24,7 @@ impl Workspace {
 
         let tcon_dir = root.join(".tcon");
         if !tcon_dir.is_dir() {
-            return Err(format!(
-                "Missing .tcon directory at {}",
-                tcon_dir.display()
-            ));
+            return Err(format!("Missing .tcon directory at {}", tcon_dir.display()));
         }
         Ok(Self { root, tcon_dir })
     }
@@ -35,22 +32,7 @@ impl Workspace {
     /// Find all the entry files under `.tcon/` with the `.tcon` extension
     pub fn find_tcon_entries(&self) -> Result<Vec<PathBuf>, String> {
         let mut out = Vec::new();
-        for f in std::fs::read_dir(&self.tcon_dir)
-            .map_err(|e| format!("failed to list .tcon directory: {e}"))?
-        {
-            let f = f.map_err(|e| format!("failed to read dir entry: {e}"))?;
-            let p = f.path();
-
-            // Include only the files
-            if p.is_file() {
-                if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                    // Track the only file with `.tcon` extension
-                    if name.ends_with(".tcon") {
-                        out.push(p);
-                    }
-                }
-            }
-        }
+        collect_tcon_entries(&self.tcon_dir, &mut out)?;
         // sort so the output is determinstic across OS/filesystem order.
         out.sort();
         Ok(out)
@@ -69,10 +51,25 @@ impl Workspace {
         if candidate.exists() {
             Ok(candidate)
         } else {
-            Err(format!(
-                "File not found: {}",
-                candidate.display()
-            ))
+            Err(format!("File not found: {}", candidate.display()))
         }
     }
+}
+
+fn collect_tcon_entries(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    for f in std::fs::read_dir(dir).map_err(|e| format!("failed to list {}: {e}", dir.display()))? {
+        let f = f.map_err(|e| format!("failed to read dir entry: {e}"))?;
+        let p = f.path();
+        if p.is_dir() {
+            collect_tcon_entries(&p, out)?;
+            continue;
+        }
+        if p.is_file()
+            && let Some(name) = p.file_name().and_then(|s| s.to_str())
+            && name.ends_with(".tcon")
+        {
+            out.push(p);
+        }
+    }
+    Ok(())
 }

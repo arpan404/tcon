@@ -34,7 +34,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_import_stmt(&mut self) -> Result<ImportStmt, String> {
-        let start = self.expect_simple(TokenKind::Import)?.span.start;
+        self.expect_simple(TokenKind::Import)?;
         self.expect_simple(TokenKind::LBrace)?;
         let mut names = Vec::new();
         loop {
@@ -53,38 +53,21 @@ impl<'a> Parser<'a> {
         let from = match from_tok.kind {
             TokenKind::String(s) => s,
             _ => {
-                return Err(self.err_at(
-                    from_tok.span.start,
-                    "import source must be a string",
-                ));
+                return Err(self.err_at(from_tok.span.start, "import source must be a string"));
             }
         };
-        let end = self
-            .maybe_simple(TokenKind::Semi)
-            .map(|t| t.span.end)
-            .unwrap_or(from_tok.span.end);
-        Ok(ImportStmt {
-            names,
-            from,
-            span: Span::new(start, end),
-        })
+        self.maybe_simple(TokenKind::Semi);
+        Ok(ImportStmt { names, from })
     }
 
     fn parse_export_const(&mut self) -> Result<ExportConst, String> {
-        let start = self.expect_simple(TokenKind::Export)?.span.start;
+        self.expect_simple(TokenKind::Export)?;
         self.expect_simple(TokenKind::Const)?;
         let (name, _) = self.expect_ident()?;
         self.expect_simple(TokenKind::Eq)?;
         let expr = self.parse_expr()?;
-        let end = self
-            .maybe_simple(TokenKind::Semi)
-            .map(|t| t.span.end)
-            .unwrap_or(expr_span(&expr).end);
-        Ok(ExportConst {
-            name,
-            expr,
-            span: Span::new(start, end),
-        })
+        self.maybe_simple(TokenKind::Semi);
+        Ok(ExportConst { name, expr })
     }
 
     fn parse_expr(&mut self) -> Result<Expr, String> {
@@ -140,9 +123,10 @@ impl<'a> Parser<'a> {
                 TokenKind::Ident(k) => Key::Ident(k.clone()),
                 TokenKind::String(k) => Key::String(k.clone()),
                 _ => {
-                    return Err(
-                        self.err_at(key_tok.span.start, "object key must be identifier or string")
-                    );
+                    return Err(self.err_at(
+                        key_tok.span.start,
+                        "object key must be identifier or string",
+                    ));
                 }
             };
             self.expect_simple(TokenKind::Colon)?;

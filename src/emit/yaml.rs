@@ -22,7 +22,9 @@ fn render(value: &Value, depth: usize) -> String {
                     Value::Object(_) | Value::Array(_) => {
                         out.push_str(&format!("{indent}-\n"));
                         out.push_str(&next_indent);
-                        out.push_str(&render(item, depth + 1).replace('\n', &format!("\n{next_indent}")));
+                        out.push_str(
+                            &render(item, depth + 1).replace('\n', &format!("\n{next_indent}")),
+                        );
                     }
                     _ => {
                         out.push_str(&format!("{indent}- {}", render(item, depth + 1)));
@@ -47,7 +49,9 @@ fn render(value: &Value, depth: usize) -> String {
                     Value::Object(_) | Value::Array(_) => {
                         out.push_str(&format!("{indent}{k}:\n"));
                         out.push_str(&next_indent);
-                        out.push_str(&render(v, depth + 1).replace('\n', &format!("\n{next_indent}")));
+                        out.push_str(
+                            &render(v, depth + 1).replace('\n', &format!("\n{next_indent}")),
+                        );
                     }
                     _ => out.push_str(&format!("{indent}{k}: {}", render(v, depth + 1))),
                 }

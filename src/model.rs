@@ -16,7 +16,6 @@ impl Span {
 pub struct ExportConst {
     pub name: String,
     pub expr: Expr,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -48,7 +47,6 @@ pub struct Program {
 pub struct ImportStmt {
     pub names: Vec<String>,
     pub from: String,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +83,16 @@ pub enum Schema {
     },
     Array {
         item: Box<Schema>,
+        default: Option<Value>,
+        optional: bool,
+    },
+    Enum {
+        variants: Vec<String>,
+        default: Option<Value>,
+        optional: bool,
+    },
+    Union {
+        variants: Vec<Schema>,
         default: Option<Value>,
         optional: bool,
     },

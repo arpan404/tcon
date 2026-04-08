@@ -17,7 +17,7 @@ use crate::workspace::Workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 fn usage() {
@@ -54,7 +54,7 @@ fn resolve_entries(ws: &Workspace, entry: Option<&str>) -> Result<Vec<PathBuf>, 
     }
 }
 
-fn compile_entry(ws: &Workspace, entry_file: &PathBuf) -> Result<(PathBuf, String), String> {
+fn compile_entry(ws: &Workspace, entry_file: &Path) -> Result<(PathBuf, String), String> {
     let (exports, file_name) = load_program(entry_file)?;
     let spec = evaluate_spec(&exports, &file_name)?;
     if !matches!(spec.format.as_str(), "json" | "yaml" | "env") {
@@ -75,7 +75,9 @@ fn compile_entry(ws: &Workspace, entry_file: &PathBuf) -> Result<(PathBuf, Strin
     if spec.mode.is_none() {
         // Keep the mode field explicit in CLI semantics for future expansions.
     }
-    if let Some(mode) = &spec.mode && mode != "replace" {
+    if let Some(mode) = &spec.mode
+        && mode != "replace"
+    {
         return Err(format!(
             "{}: only spec.mode=\"replace\" is supported",
             file_name
@@ -214,12 +216,7 @@ fn run_watch(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
             }
             let list: Vec<String> = uniq
                 .iter()
-                .map(|p| {
-                    p.strip_prefix(&ws.root)
-                        .unwrap_or(p)
-                        .display()
-                        .to_string()
-                })
+                .map(|p| p.strip_prefix(&ws.root).unwrap_or(p).display().to_string())
                 .collect();
 
             println!("change detected, rebuilding...");
