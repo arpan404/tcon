@@ -385,7 +385,12 @@ fn classify_error_code(message: &str) -> &'static str {
     if message.contains("unsupported spec.format") {
         return "E_SPEC_FORMAT";
     }
-    if message.contains("expected ") || message.contains("unsupported schema") {
+    if message.contains("expected ")
+        || message.contains("unsupported schema")
+        || message.contains("t.union() requires")
+        || message.contains("t.enum() requires")
+        || message.contains(".strict() only valid")
+    {
         return "E_PARSE_OR_SCHEMA";
     }
     "E_RUNTIME"

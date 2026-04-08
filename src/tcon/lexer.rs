@@ -113,10 +113,12 @@ pub fn lex(src: &str, file_name: &str) -> Result<Vec<Token>, String> {
             '"' => {
                 i += 1;
                 let mut out = String::new();
+                let mut closed = false;
                 while i < bytes.len() {
                     let ch = bytes[i] as char;
                     if ch == '"' {
                         i += 1;
+                        closed = true;
                         break;
                     }
                     if ch == '\\' {
@@ -144,6 +146,14 @@ pub fn lex(src: &str, file_name: &str) -> Result<Vec<Token>, String> {
                     }
                     out.push(ch);
                     i += 1;
+                }
+                if !closed {
+                    return Err(format_source_error(
+                        file_name,
+                        src,
+                        start,
+                        "unterminated string literal",
+                    ));
                 }
                 TokenKind::String(out)
             }
