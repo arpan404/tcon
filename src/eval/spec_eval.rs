@@ -1,4 +1,5 @@
 use crate::model::{Expr, Key, Spec};
+use std::path::Path;
 
 pub fn evaluate_spec_expr(expr: &Expr, file_name: &str) -> Result<Spec, String> {
     let Expr::Object(fields, _) = expr else {
@@ -24,6 +25,19 @@ pub fn evaluate_spec_expr(expr: &Expr, file_name: &str) -> Result<Spec, String> 
     let path = path.ok_or_else(|| format!("{file_name}: spec.path is required"))?;
     if path.trim().is_empty() {
         return Err(format!("{file_name}: spec.path must not be empty"));
+    }
+    let p = Path::new(&path);
+    if p.is_absolute() {
+        return Err(format!(
+            "{file_name}: spec.path must be a relative path, got absolute path '{path}'"
+        ));
+    }
+    for component in p.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(format!(
+                "{file_name}: spec.path must not contain '..' (path traversal outside workspace is not allowed)"
+            ));
+        }
     }
     let format = format.unwrap_or_else(|| "json".to_string());
     Ok(Spec { path, format, mode })

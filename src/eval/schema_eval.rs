@@ -131,6 +131,14 @@ fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, Stri
                     "{file_name}: t.enum() requires at least one variant"
                 ));
             }
+            let mut seen_v = std::collections::BTreeSet::new();
+            for s in &variants {
+                if !seen_v.insert(s.as_str()) {
+                    return Err(format!(
+                        "{file_name}: t.enum() has duplicate variant '{s}'"
+                    ));
+                }
+            }
             Ok(Schema::Enum {
                 variants,
                 default: None,
@@ -195,7 +203,25 @@ fn apply_method(
             }
             let n = parse_number_literal(&args[0], file_name, ".min()")?;
             match schema {
-                Schema::String { min, .. } | Schema::Number { min, .. } => {
+                Schema::String { min, max, .. } => {
+                    if let Some(mx) = *max
+                        && n > mx
+                    {
+                        return Err(format!(
+                            "{file_name}: .min({n}) > .max({mx}) — bounds are inverted"
+                        ));
+                    }
+                    *min = Some(n);
+                    Ok(())
+                }
+                Schema::Number { min, max, .. } => {
+                    if let Some(mx) = *max
+                        && n > mx
+                    {
+                        return Err(format!(
+                            "{file_name}: .min({n}) > .max({mx}) — bounds are inverted"
+                        ));
+                    }
                     *min = Some(n);
                     Ok(())
                 }
@@ -210,7 +236,25 @@ fn apply_method(
             }
             let n = parse_number_literal(&args[0], file_name, ".max()")?;
             match schema {
-                Schema::String { max, .. } | Schema::Number { max, .. } => {
+                Schema::String { max, min, .. } => {
+                    if let Some(mn) = *min
+                        && n < mn
+                    {
+                        return Err(format!(
+                            "{file_name}: .max({n}) < .min({mn}) — bounds are inverted"
+                        ));
+                    }
+                    *max = Some(n);
+                    Ok(())
+                }
+                Schema::Number { max, min, .. } => {
+                    if let Some(mn) = *min
+                        && n < mn
+                    {
+                        return Err(format!(
+                            "{file_name}: .max({n}) < .min({mn}) — bounds are inverted"
+                        ));
+                    }
                     *max = Some(n);
                     Ok(())
                 }

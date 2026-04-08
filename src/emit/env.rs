@@ -1,13 +1,34 @@
 use crate::model::Value;
+use std::collections::BTreeMap;
 
 pub fn to_env(value: &Value) -> Result<String, String> {
-    let mut lines = Vec::new();
-    flatten(value, "", &mut lines)?;
-    lines.sort();
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    flatten(value, "", &mut pairs)?;
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    detect_key_collision(&pairs)?;
+    let lines: Vec<String> = pairs
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
     Ok(lines.join("\n"))
 }
 
-fn flatten(value: &Value, prefix: &str, out: &mut Vec<String>) -> Result<(), String> {
+/// Fail if two different config paths normalize to the same env key.
+fn detect_key_collision(pairs: &[(String, String)]) -> Result<(), String> {
+    let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+    for (k, _) in pairs {
+        if seen.contains_key(k.as_str()) {
+            return Err(format!(
+                "env key collision: multiple config fields normalize to the same env variable '{k}' \
+                 (e.g. keys like 'a-b' and 'a_b' both become 'A_B')"
+            ));
+        }
+        seen.insert(k.as_str(), k.as_str());
+    }
+    Ok(())
+}
+
+fn flatten(value: &Value, prefix: &str, out: &mut Vec<(String, String)>) -> Result<(), String> {
     match value {
         Value::Object(map) => {
             for (k, v) in map {
@@ -33,15 +54,15 @@ fn flatten(value: &Value, prefix: &str, out: &mut Vec<String>) -> Result<(), Str
             Ok(())
         }
         Value::String(s) => {
-            out.push(format!("{prefix}={s}"));
+            out.push((prefix.to_string(), s.clone()));
             Ok(())
         }
         Value::Number(n) => {
-            out.push(format!("{prefix}={n}"));
+            out.push((prefix.to_string(), n.clone()));
             Ok(())
         }
         Value::Bool(b) => {
-            out.push(format!("{prefix}={b}"));
+            out.push((prefix.to_string(), b.to_string()));
             Ok(())
         }
         Value::Null => Err(format!("cannot emit null value for env key '{prefix}'")),

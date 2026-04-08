@@ -1331,3 +1331,288 @@ export const config = {
         "simple keys stay unquoted:\n{yaml}"
     );
 }
+
+// ─── New robustness guards ────────────────────────────────────────────────────
+
+// --- Lexer: multi-decimal numbers ---
+
+#[test]
+fn number_with_multiple_decimal_points_rejected() {
+    let root = mk_workspace("multi_dot_num");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ v: t.number() }).strict();
+export const config = { v: 1.2.3 };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "build should fail on 1.2.3");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("multiple decimal") || stderr.contains("unexpected"),
+        "expected decimal-point error: {stderr}"
+    );
+}
+
+// --- spec.path safety ---
+
+#[test]
+fn spec_path_absolute_rejected() {
+    let root = mk_workspace("abs_spec_path");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "/etc/tcon_output.json", format: "json" };
+export const schema = t.object({}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "absolute spec.path must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("relative path") || stderr.contains("absolute"),
+        "expected absolute-path error: {stderr}"
+    );
+}
+
+#[test]
+fn spec_path_traversal_rejected() {
+    let root = mk_workspace("traversal_spec_path");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "../../etc/secrets.json", format: "json" };
+export const schema = t.object({}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "path traversal must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("..") || stderr.contains("traversal"),
+        "expected traversal error: {stderr}"
+    );
+}
+
+// --- Duplicate output path across entries ---
+
+#[test]
+fn duplicate_output_path_across_entries_fails() {
+    let root = mk_workspace("dup_output");
+    write_file(
+        &root.join(".tcon/a.tcon"),
+        r#"
+export const spec = { path: "shared.json", format: "json" };
+export const schema = t.object({ n: t.number().default(1) }).strict();
+export const config = {};
+"#,
+    );
+    write_file(
+        &root.join(".tcon/b.tcon"),
+        r#"
+export const spec = { path: "shared.json", format: "json" };
+export const schema = t.object({ n: t.number().default(2) }).strict();
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["build"]);
+    assert!(!out.status.success(), "two .tcon files writing same path must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("collision") || stderr.contains("shared.json"),
+        "expected collision error: {stderr}"
+    );
+}
+
+// --- Duplicate enum variants ---
+
+#[test]
+fn enum_duplicate_variant_rejected() {
+    let root = mk_workspace("dup_enum");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  mode: t.enum(["dev", "prod", "dev"]),
+}).strict();
+export const config = { mode: "dev" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "duplicate enum variant must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("duplicate variant") || stderr.contains("duplicate"),
+        "expected duplicate-variant error: {stderr}"
+    );
+}
+
+// --- Inverted min/max bounds ---
+
+#[test]
+fn number_min_greater_than_max_rejected() {
+    let root = mk_workspace("inv_num_bounds");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  port: t.number().min(100).max(10),
+}).strict();
+export const config = { port: 50 };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "inverted number bounds must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("inverted") || stderr.contains("bounds"),
+        "expected inverted-bounds error: {stderr}"
+    );
+}
+
+#[test]
+fn string_min_greater_than_max_rejected() {
+    let root = mk_workspace("inv_str_bounds");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  name: t.string().min(10).max(3),
+}).strict();
+export const config = { name: "hi" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "inverted string bounds must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("inverted") || stderr.contains("bounds"),
+        "expected inverted-bounds error: {stderr}"
+    );
+}
+
+// --- ENV key normalization collision ---
+
+#[test]
+fn env_key_collision_rejected() {
+    let root = mk_workspace("env_key_coll");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.env", format: "env" };
+export const schema = t.object({
+  a_b: t.string().default("one"),
+  "a-b": t.string().default("two"),
+}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success(), "env key collision must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("collision") || stderr.contains("A_B"),
+        "expected collision error mentioning key: {stderr}"
+    );
+}
+
+// --- Enum error message shows allowed variants ---
+
+#[test]
+fn enum_error_shows_allowed_variants() {
+    let root = mk_workspace("enum_msg");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  env: t.enum(["development", "staging", "production"]),
+}).strict();
+export const config = { env: "local" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("enum value not in allowed variants"),
+        "should still contain base message: {stderr}"
+    );
+    assert!(
+        stderr.contains("development") && stderr.contains("production"),
+        "error should list allowed variants: {stderr}"
+    );
+    assert!(
+        stderr.contains("local"),
+        "error should echo the rejected value: {stderr}"
+    );
+}
+
+// --- TOML: keys with special characters are properly quoted ---
+
+#[test]
+fn toml_keys_with_special_chars_are_quoted() {
+    let root = mk_workspace("toml_quote_keys");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.toml", format: "toml" };
+export const schema = t.object({
+  "has.dot": t.string().default("dotval"),
+  "has space": t.string().default("spaceval"),
+  simple: t.string().default("ok"),
+}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["build"]);
+    assert!(out.status.success(), "build failed: {:?}", out);
+    let toml = fs::read_to_string(root.join("out.toml")).expect("read toml");
+    // Keys with dots or spaces must be quoted in TOML
+    assert!(
+        toml.contains("\"has.dot\"") || toml.contains("'has.dot'"),
+        "dot key should be quoted:\n{toml}"
+    );
+    assert!(
+        toml.contains("\"has space\"") || toml.contains("'has space'"),
+        "space key should be quoted:\n{toml}"
+    );
+    // Simple bare key stays unquoted
+    assert!(
+        toml.contains("simple ="),
+        "bare key should stay unquoted:\n{toml}"
+    );
+}
+
+// --- Richer type mismatch messages ---
+
+#[test]
+fn type_mismatch_error_shows_actual_type() {
+    let root = mk_workspace("type_mismatch");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  name: t.string(),
+  count: t.number(),
+}).strict();
+export const config = { name: 42, count: "hello" };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Fields are visited alphabetically: count (number, got string) comes first
+    assert!(
+        stderr.contains("expected number, got string"),
+        "error should show expected type and actual type: {stderr}"
+    );
+}

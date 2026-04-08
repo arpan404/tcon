@@ -187,9 +187,21 @@ pub fn lex(src: &str, file_name: &str) -> Result<Vec<Token>, String> {
                     ));
                 }
                 i += 1;
+                let mut dot_seen = false;
                 while i < bytes.len() {
                     let ch = bytes[i] as char;
-                    if ch.is_ascii_digit() || ch == '.' {
+                    if ch.is_ascii_digit() {
+                        i += 1;
+                    } else if ch == '.' {
+                        if dot_seen {
+                            return Err(format_source_error(
+                                file_name,
+                                src,
+                                i,
+                                "invalid number literal: multiple decimal points",
+                            ));
+                        }
+                        dot_seen = true;
                         i += 1;
                     } else {
                         break;
@@ -199,9 +211,21 @@ pub fn lex(src: &str, file_name: &str) -> Result<Vec<Token>, String> {
             }
             '0'..='9' => {
                 i += 1;
+                let mut dot_seen = false;
                 while i < bytes.len() {
                     let ch = bytes[i] as char;
-                    if ch.is_ascii_digit() || ch == '.' {
+                    if ch.is_ascii_digit() {
+                        i += 1;
+                    } else if ch == '.' {
+                        if dot_seen {
+                            return Err(format_source_error(
+                                file_name,
+                                src,
+                                i,
+                                "invalid number literal: multiple decimal points",
+                            ));
+                        }
+                        dot_seen = true;
                         i += 1;
                     } else {
                         break;

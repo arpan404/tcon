@@ -25,6 +25,18 @@ use std::io::{self, ErrorKind, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+/// Write `content` to `dest` atomically via a sibling temp file then rename,
+/// so a partial write is never visible to readers.
+fn atomic_write(dest: &Path, content: &str) -> Result<(), String> {
+    let tmp = dest.with_extension("tcon_tmp");
+    fs::write(&tmp, content)
+        .map_err(|e| format!("failed writing temp file {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, dest).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("failed renaming temp file to {}: {e}", dest.display())
+    })
+}
+
 /// Enable ANSI styling for a stream: TTY, no `NO_COLOR`, `CLICOLOR`≠0, `TERM`≠`dumb`.
 fn color_on(stream: &impl IsTerminal) -> bool {
     if env::var_os("NO_COLOR").is_some() {
@@ -357,6 +369,28 @@ fn resolve_entries(ws: &Workspace, entry: Option<&str>) -> Result<Vec<PathBuf>, 
     }
 }
 
+/// Compile every entry in `entries`, check for duplicate output paths, and return
+/// `(entry_file, output_path, rendered_content)` triples ready for use.
+fn compile_all(
+    ws: &Workspace,
+    entries: &[PathBuf],
+) -> Result<Vec<(PathBuf, PathBuf, String)>, String> {
+    let mut cache = LoadCache::default();
+    let mut seen: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut results = Vec::with_capacity(entries.len());
+    for entry_file in entries {
+        let (output, rendered) = compile_entry(ws, entry_file, &mut cache)?;
+        if !seen.insert(output.clone()) {
+            return Err(format!(
+                "output collision: multiple .tcon sources emit to '{}' — each spec.path must be unique",
+                output.strip_prefix(&ws.root).unwrap_or(&output).display()
+            ));
+        }
+        results.push((entry_file.clone(), output, rendered));
+    }
+    Ok(results)
+}
+
 fn compile_entry(
     ws: &Workspace,
     entry_file: &Path,
@@ -423,13 +457,12 @@ fn run_validate(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
     }
 
     let s = Theme::for_stdout();
-    let mut cache = LoadCache::default();
-    for entry_file in entries {
-        let (output, _) = compile_entry(ws, &entry_file, &mut cache)?;
-        let out_rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
+    let compiled = compile_all(ws, &entries)?;
+    for (entry_file, output, _) in &compiled {
+        let out_rel = output.strip_prefix(&ws.root).unwrap_or(output).display();
         let entry_rel = entry_file
             .strip_prefix(&ws.tcon_dir)
-            .unwrap_or(&entry_file)
+            .unwrap_or(entry_file)
             .display();
         println!(
             "{ok}ok{s}  {p}{entry_rel}{s} {d}→{s} {p}{out_rel}{s}  {d}(dry-run; disk not touched){s}",
@@ -462,14 +495,13 @@ fn run_build(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
     }
 
     let s = Theme::for_stdout();
-    let mut cache = LoadCache::default();
-    for entry_file in entries {
-        let (output, rendered) = compile_entry(ws, &entry_file, &mut cache)?;
+    let compiled = compile_all(ws, &entries)?;
+    for (_, output, rendered) in compiled {
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("failed creating output directory: {e}"))?;
         }
-        fs::write(&output, rendered).map_err(|e| format!("failed writing output file: {e}"))?;
+        atomic_write(&output, &rendered)?;
         let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
         println!(
             "{ok}ok{s}  wrote {p}{rel}{s}",
@@ -489,10 +521,9 @@ fn run_check(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
 
     let s = Theme::for_stdout();
     let ansi = color_on(&io::stdout());
-    let mut cache = LoadCache::default();
+    let compiled = compile_all(ws, &entries)?;
     let mut drift = 0usize;
-    for entry_file in entries {
-        let (output, expected) = compile_entry(ws, &entry_file, &mut cache)?;
+    for (_, output, expected) in compiled {
         let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
         let (actual, missing) = match fs::read_to_string(&output) {
             Ok(got) => (got, false),
@@ -544,10 +575,9 @@ fn run_diff(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
 
     let s = Theme::for_stdout();
     let ansi = color_on(&io::stdout());
-    let mut cache = LoadCache::default();
+    let compiled = compile_all(ws, &entries)?;
     let mut drift = 0usize;
-    for entry_file in entries {
-        let (output, expected) = compile_entry(ws, &entry_file, &mut cache)?;
+    for (_, output, expected) in compiled {
         let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
         let (actual, missing) = match fs::read_to_string(&output) {
             Ok(got) => (got, false),
