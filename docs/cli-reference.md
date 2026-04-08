@@ -6,6 +6,8 @@
   - `text`: human-readable diagnostics
   - `json`: machine-readable diagnostics (`code`, `message`, `file`, `line`, `col`)
 
+`--help` uses ANSI colors when stderr is a TTY. Set `NO_COLOR=1` (or a non-empty value) to force plain text.
+
 ## Commands
 
 - `tcon validate [--entry <file.tcon>]`

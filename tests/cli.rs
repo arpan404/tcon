@@ -375,12 +375,22 @@ fn help_and_version_commands_work() {
     let help = run(&root, &["--help"]);
     assert!(help.status.success());
     let help_text = String::from_utf8_lossy(&help.stderr);
-    assert!(help_text.contains("Usage:"));
+    assert!(
+        help_text.contains("USAGE") && help_text.contains("COMMANDS"),
+        "{help_text}"
+    );
+    assert!(
+        help_text.contains("validate") && help_text.contains("NO_COLOR"),
+        "{help_text}"
+    );
 
     let version = run(&root, &["--version"]);
     assert!(version.status.success());
     let version_text = String::from_utf8_lossy(&version.stdout);
-    assert!(version_text.contains("tcon 1.0.0"));
+    assert!(
+        version_text.contains("tcon") && version_text.contains("1.0.0"),
+        "{version_text}"
+    );
 }
 
 #[test]

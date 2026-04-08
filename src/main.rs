@@ -21,8 +21,53 @@ use crate::workspace::Workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
+
+/// ANSI styling for help text; empty when `NO_COLOR` is set or stderr isn’t a TTY.
+struct Theme {
+    bold: &'static str,
+    dim: &'static str,
+    reset: &'static str,
+    title: &'static str,
+    cmd: &'static str,
+    flag: &'static str,
+    accent: &'static str,
+}
+
+impl Theme {
+    fn for_stderr() -> Self {
+        Self::new(io::stderr().is_terminal())
+    }
+
+    fn for_stdout() -> Self {
+        Self::new(io::stdout().is_terminal())
+    }
+
+    fn new(color: bool) -> Self {
+        if env::var_os("NO_COLOR").is_some() || !color {
+            return Self {
+                bold: "",
+                dim: "",
+                reset: "",
+                title: "",
+                cmd: "",
+                flag: "",
+                accent: "",
+            };
+        }
+        Self {
+            bold: "\x1b[1m",
+            dim: "\x1b[2m",
+            reset: "\x1b[0m",
+            title: "\x1b[1;36m",
+            cmd: "\x1b[1;32m",
+            flag: "\x1b[33m",
+            accent: "\x1b[35m",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ErrorFormat {
@@ -31,19 +76,144 @@ enum ErrorFormat {
 }
 
 fn usage() {
-    eprintln!("tcon - typed configuration compiler");
-    eprintln!("Usage:");
-    eprintln!("  tcon [--error-format text|json] validate [--entry <file.tcon>]");
-    eprintln!("  tcon [--error-format text|json] build|generate [--entry <file.tcon>]");
-    eprintln!("  tcon [--error-format text|json] check [--entry <file.tcon>]");
-    eprintln!("  tcon [--error-format text|json] diff [--entry <file.tcon>]");
-    eprintln!("  tcon [--error-format text|json] print --entry <file.tcon>");
-    eprintln!("  tcon [--error-format text|json] watch [--entry <file.tcon>] [--interval-ms <n>]");
-    eprintln!("  tcon [--error-format text|json] init [--preset <name>] [--force]");
+    let s = Theme::for_stderr();
+    let ver = env!("CARGO_PKG_VERSION");
+    eprintln!(
+        "{ti}tcon{sreset} {dim}v{ver}{sreset} — typed configuration compiler",
+        ti = s.title,
+        sreset = s.reset,
+        dim = s.dim,
+        ver = ver
+    );
+    eprintln!(
+        "{dim}Compile `.tcon` schema + values into JSON, YAML, ENV, TOML, or Java properties.{sreset}",
+        dim = s.dim,
+        sreset = s.reset
+    );
+    eprintln!();
+    eprintln!("{bold}USAGE{sreset}", bold = s.bold, sreset = s.reset);
+    eprintln!(
+        "  {cmd}tcon{sreset} [{flag}OPTIONS{sreset}] {dim}<COMMAND>{sreset} [{dim}…{sreset}]",
+        cmd = s.cmd,
+        flag = s.flag,
+        dim = s.dim,
+        sreset = s.reset
+    );
+    eprintln!();
+    eprintln!(
+        "{bold}GLOBAL OPTIONS{sreset}",
+        bold = s.bold,
+        sreset = s.reset
+    );
+    eprintln!(
+        "  {flag}--error-format{sreset} {dim}<text|json>{sreset}   Diagnostics: human text (default) or one JSON object per error.",
+        flag = s.flag,
+        dim = s.dim,
+        sreset = s.reset
+    );
+    eprintln!(
+        "  {flag}-h{sreset}, {flag}--help{sreset}{pad}This screen.",
+        flag = s.flag,
+        sreset = s.reset,
+        pad = " ".repeat(22)
+    );
+    eprintln!(
+        "  {flag}-V{sreset}, {flag}--version{sreset}{pad}Show version.",
+        flag = s.flag,
+        sreset = s.reset,
+        pad = " ".repeat(18)
+    );
+    eprintln!();
+    eprintln!("{bold}COMMANDS{sreset}", bold = s.bold, sreset = s.reset);
+    let cmd = |name: &str, desc: &str| {
+        eprintln!(
+            "  {c}{n:<13}{r}{d}{desc}{r}",
+            c = s.cmd,
+            n = name,
+            r = s.reset,
+            d = s.dim,
+            desc = desc
+        );
+    };
+    cmd(
+        "validate",
+        "Compile entries in memory only — no writes (great for CI).",
+    );
+    cmd(
+        "build",
+        "Emit outputs to each `spec.path` (relative to workspace root).",
+    );
+    cmd("generate", "Alias of `build`.");
+    cmd(
+        "check",
+        "Recompile and fail if on-disk files differ from the result.",
+    );
+    cmd("diff", "Show unified-style hunks for files that differ.");
+    cmd(
+        "print",
+        "Debug: print the parsed program for one `--entry`.",
+    );
+    cmd(
+        "watch",
+        "Poll sources & rebuild on change. Flags: `--entry`, `--interval-ms` (default 800, min 100).",
+    );
+    cmd(
+        "init",
+        "Scaffold samples under `.tcon/`. Flags: `--preset`, `--force`.",
+    );
+    eprintln!();
+    eprintln!("{bold}COMMON ARGS{sreset}", bold = s.bold, sreset = s.reset);
+    eprintln!(
+        "  {flag}--entry{sreset} {dim}<file.tcon>{sreset}     Path under `.tcon/` (or absolute).",
+        flag = s.flag,
+        dim = s.dim,
+        sreset = s.reset
+    );
+    eprintln!(
+        "  {dim}             Applies to: validate, build, generate, check, diff, watch, print.{sreset}",
+        dim = s.dim,
+        sreset = s.reset
+    );
+    eprintln!();
+    eprintln!("{bold}EXAMPLES{sreset}", bold = s.bold, sreset = s.reset);
+    eprintln!(
+        "  {acc}$ tcon validate && tcon check{sreset}",
+        acc = s.accent,
+        sreset = s.reset
+    );
+    eprintln!(
+        "  {acc}$ tcon build --entry api/server.tcon{sreset}",
+        acc = s.accent,
+        sreset = s.reset
+    );
+    eprintln!(
+        "  {acc}$ tcon --error-format json validate{sreset}",
+        acc = s.accent,
+        sreset = s.reset
+    );
+    eprintln!();
+    eprintln!(
+        "{dim}More: docs/cli-reference.md · Disable ANSI: NO_COLOR=1{sreset}",
+        dim = s.dim,
+        sreset = s.reset
+    );
 }
 
 fn print_version() {
-    println!("tcon {}", env!("CARGO_PKG_VERSION"));
+    let s = Theme::for_stdout();
+    let ver = env!("CARGO_PKG_VERSION");
+    println!(
+        "{ti}tcon{sreset} {bold}{ver}{sreset}",
+        ti = s.title,
+        bold = s.bold,
+        sreset = s.reset,
+        ver = ver
+    );
+    println!(
+        "{dim}typed configuration compiler{sreset}",
+        dim = s.dim,
+        sreset = s.reset
+    );
 }
 
 fn parse_optional_entry(args: &[String]) -> Result<Option<&str>, String> {
