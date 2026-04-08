@@ -23,16 +23,17 @@ Every entry file must provide:
 - `export const schema = ...`
 - `export const config = ...`
 
-### Allowed syntax (MVP)
+### Allowed syntax
 
 - `export const` declarations
+- `import { name } from "./other.tcon"` symbol imports
 - object literals, array literals, primitive literals
 - member access and call chains for schema declarations
 - comments (`//` and `/* ... */`)
 
-### Disallowed syntax (MVP)
+### Disallowed syntax
 
-- imports/exports beyond `export const`
+- imports other than named symbol imports
 - functions, loops, conditionals
 - spreads, computed properties
 - arbitrary expressions and operators
@@ -79,18 +80,18 @@ flowchart TD
   - Exit `0` when no drift exists.
   - Exit non-zero when any file differs or fails to compile.
 - `tcon diff [--entry <file.tcon>]`
-  - Prints first-difference summaries for files with drift.
+  - Prints compact unified-style drift hunks for files with differences.
   - Exit `0` when there are no differences.
   - Exit non-zero when differences exist.
 - `tcon print --entry <file.tcon>`
   - Prints parsed export expressions for debugging parser output.
 - `tcon watch [--entry <file.tcon>]`
-  - Runs an initial build, then rebuilds when `.tcon` entry file mtimes change.
+  - Runs an initial build, then rebuilds when entry or transitive imported `.tcon` files change.
 
 ## Implemented Scope
 
 - Output formats: JSON, YAML, ENV.
-- Schema roots: `t.string()`, `t.number()`, `t.boolean()`/`t.bool()`, `t.object({...})`, `t.array(...)`.
+- Schema roots: `t.string()`, `t.number()`, `t.boolean()`/`t.bool()`, `t.object({...})`, `t.array(...)`, `t.enum([...])`, `t.union([...])`.
 - Supported modifiers: `.default(value)`, `.optional()`, `.min(n)`, `.max(n)`, `.int()`, `.strict()`.
 - Imports: `import { symbol } from "./other.tcon";` with cycle detection and symbol validation.
 
@@ -118,7 +119,7 @@ flowchart TD
 
 ## Roadmap
 
-1. Improve diff UX beyond first-difference output.
-2. Expand watch mode to track imported dependency files transitively.
-3. Add richer parser diagnostics with line/column snippets.
-4. Extend schema DSL (union/enum/record) while preserving deterministic output.
+1. Expand schema DSL (`record`, richer unions, literal schemas).
+2. Add machine-readable diagnostics mode (`--error-format json`).
+3. Add semantic compatibility tests and golden fixtures for release gating.
+4. Freeze and version the v1 DSL spec.

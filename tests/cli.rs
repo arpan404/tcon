@@ -198,3 +198,47 @@ export const config = { mode: "prod", level: 3 };
     assert!(json.contains("\"mode\": \"prod\""));
     assert!(json.contains("\"level\": 3"));
 }
+
+#[test]
+fn enum_validation_fails_for_unknown_variant() {
+    let root = mk_workspace("enum_fail");
+    write_file(
+        &root.join(".tcon/service.tcon"),
+        r#"
+export const spec = { path: "service.json", format: "json" };
+export const schema = t.object({
+  mode: t.enum(["dev", "prod"]),
+}).strict();
+export const config = { mode: "stage" };
+"#,
+    );
+    let out = run(&root, &["build"]);
+    assert!(!out.status.success(), "build should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("enum value not in allowed variants"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn union_validation_fails_when_no_variant_matches() {
+    let root = mk_workspace("union_fail");
+    write_file(
+        &root.join(".tcon/service.tcon"),
+        r#"
+export const spec = { path: "service.json", format: "json" };
+export const schema = t.object({
+  level: t.union([t.number().int(), t.string().min(2)]),
+}).strict();
+export const config = { level: true };
+"#,
+    );
+    let out = run(&root, &["build"]);
+    assert!(!out.status.success(), "build should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("expected string") || stderr.contains("expected number"),
+        "{stderr}"
+    );
+}
