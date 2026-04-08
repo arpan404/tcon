@@ -112,6 +112,30 @@ fn validate_inner(
             }
             Ok(Value::Array(out))
         }
+        Schema::Record {
+            value,
+            default,
+            optional,
+        } => {
+            let v = match (provided, default) {
+                (Some(v), _) => v.clone(),
+                (None, Some(d)) => d.clone(),
+                (None, None) if *optional => return Ok(Value::Null),
+                (None, None) => return err(file_name, path, "required record field is missing"),
+            };
+            let Value::Object(obj) = v else {
+                return err(file_name, path, "expected object for record");
+            };
+            let mut out = BTreeMap::new();
+            for (k, v) in &obj {
+                let child_path = format!("{path}.{k}");
+                out.insert(
+                    k.clone(),
+                    validate_inner(value, Some(v), &child_path, file_name)?,
+                );
+            }
+            Ok(Value::Object(out))
+        }
         Schema::Object {
             fields,
             strict,
@@ -166,6 +190,22 @@ fn validate_inner(
                 return err(file_name, path, "enum value not in allowed variants");
             }
             Ok(Value::String(s))
+        }
+        Schema::Literal {
+            value: literal,
+            default,
+            optional,
+        } => {
+            let v = match (provided, default) {
+                (Some(v), _) => v.clone(),
+                (None, Some(d)) => d.clone(),
+                (None, None) if *optional => return Ok(Value::Null),
+                (None, None) => return err(file_name, path, "required literal field is missing"),
+            };
+            if v != *literal {
+                return err(file_name, path, "value does not match required literal");
+            }
+            Ok(v)
         }
         Schema::Union {
             variants,

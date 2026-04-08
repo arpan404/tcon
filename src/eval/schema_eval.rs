@@ -82,6 +82,34 @@ fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, Stri
                 optional: false,
             })
         }
+        "record" => {
+            if args.len() != 1 {
+                return Err(format!("{file_name}: t.record() expects one argument"));
+            }
+            Ok(Schema::Record {
+                value: Box::new(eval_chain(&args[0], file_name)?),
+                default: None,
+                optional: false,
+            })
+        }
+        "literal" => {
+            if args.len() != 1 {
+                return Err(format!("{file_name}: t.literal() expects one argument"));
+            }
+            let value = evaluate_config_expr(&args[0], file_name)?;
+            match value {
+                Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => {
+                    Ok(Schema::Literal {
+                        value,
+                        default: None,
+                        optional: false,
+                    })
+                }
+                _ => Err(format!(
+                    "{file_name}: t.literal() only supports primitive literal values"
+                )),
+            }
+        }
         "enum" => {
             if args.len() != 1 {
                 return Err(format!("{file_name}: t.enum() expects one argument"));
@@ -229,6 +257,8 @@ fn set_optional(schema: &mut Schema, optional: bool) {
         | Schema::Boolean { optional: o, .. }
         | Schema::Object { optional: o, .. }
         | Schema::Array { optional: o, .. }
+        | Schema::Record { optional: o, .. }
+        | Schema::Literal { optional: o, .. }
         | Schema::Enum { optional: o, .. }
         | Schema::Union { optional: o, .. } => *o = optional,
     }
@@ -241,6 +271,8 @@ fn set_default(schema: &mut Schema, value: Value) {
         | Schema::Boolean { default, .. }
         | Schema::Object { default, .. }
         | Schema::Array { default, .. }
+        | Schema::Record { default, .. }
+        | Schema::Literal { default, .. }
         | Schema::Enum { default, .. }
         | Schema::Union { default, .. } => *default = Some(value),
     }

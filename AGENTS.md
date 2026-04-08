@@ -95,7 +95,7 @@ flowchart TD
 ## Implemented Scope
 
 - Output formats: JSON, YAML, ENV, TOML, PROPERTIES.
-- Schema roots: `t.string()`, `t.number()`, `t.boolean()`/`t.bool()`, `t.object({...})`, `t.array(...)`, `t.enum([...])`, `t.union([...])`.
+- Schema roots: `t.string()`, `t.number()`, `t.boolean()`/`t.bool()`, `t.object({...})`, `t.array(...)`, `t.record(...)`, `t.literal(...)`, `t.enum([...])`, `t.union([...])`.
 - Supported modifiers: `.default(value)`, `.optional()`, `.min(n)`, `.max(n)`, `.int()`, `.strict()`.
 - Imports: `import { symbol } from "./other.tcon";` with cycle detection and symbol validation.
 

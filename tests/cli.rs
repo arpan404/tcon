@@ -304,3 +304,50 @@ fn help_and_version_commands_work() {
     let version_text = String::from_utf8_lossy(&version.stdout);
     assert!(version_text.contains("tcon 1.0.0"));
 }
+
+#[test]
+fn record_and_literal_schemas_validate() {
+    let root = mk_workspace("record_literal");
+    write_file(
+        &root.join(".tcon/service.tcon"),
+        r#"
+export const spec = { path: "service.json", format: "json" };
+export const schema = t.object({
+  labels: t.record(t.string()).default({ env: "prod" }),
+  mode: t.literal("safe"),
+}).strict();
+export const config = { labels: { env: "dev", region: "us" }, mode: "safe" };
+"#,
+    );
+    let out = run(&root, &["build"]);
+    assert!(
+        out.status.success(),
+        "record/literal build failed: {:?}",
+        out
+    );
+    let json = fs::read_to_string(root.join("service.json")).expect("read output");
+    assert!(json.contains("\"region\": \"us\""));
+    assert!(json.contains("\"mode\": \"safe\""));
+}
+
+#[test]
+fn literal_validation_fails_when_mismatched() {
+    let root = mk_workspace("literal_fail");
+    write_file(
+        &root.join(".tcon/service.tcon"),
+        r#"
+export const spec = { path: "service.json", format: "json" };
+export const schema = t.object({
+  mode: t.literal("safe"),
+}).strict();
+export const config = { mode: "fast" };
+"#,
+    );
+    let out = run(&root, &["build"]);
+    assert!(!out.status.success(), "build should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("value does not match required literal"),
+        "{stderr}"
+    );
+}

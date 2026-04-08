@@ -4,6 +4,14 @@
 
 It compiles `.tcon` files (TypeScript-like DSL) into deterministic config outputs and detects drift.
 
+Documentation:
+
+- User guide: `docs/user-guide.md`
+- CLI reference: `docs/cli-reference.md`
+- DSL reference: `docs/dsl-reference.md`
+- Diagnostics contract: `docs/diagnostics/v1.md`
+- Publication guide: `docs/publication/github.md`
+
 ## Project maturity
 
 `tcon` is currently versioned as `v1.0.0` and includes frozen compatibility snapshots in `compat/v1/`.

@@ -86,6 +86,16 @@ pub enum Schema {
         default: Option<Value>,
         optional: bool,
     },
+    Record {
+        value: Box<Schema>,
+        default: Option<Value>,
+        optional: bool,
+    },
+    Literal {
+        value: Value,
+        default: Option<Value>,
+        optional: bool,
+    },
     Enum {
         variants: Vec<String>,
         default: Option<Value>,
