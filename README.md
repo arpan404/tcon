@@ -64,6 +64,12 @@ Global flags:
 - `toml`
 - `properties`
 
+## Safety guarantees
+
+- `spec.path` must stay inside the workspace (absolute paths, `..` traversal, and symlink escapes are rejected).
+- `.secret()` fields must be environment-sourced (`${VAR}` / `${VAR:default}`) and are redacted in `tcon print`.
+- `.secret()` fields do not permit `.default(...)` to avoid embedding fallback secrets in schema definitions.
+
 ## Minimal `.tcon` example
 
 ```ts

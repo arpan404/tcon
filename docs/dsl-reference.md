@@ -44,7 +44,10 @@ Only these keys are allowed; extra keys are rejected.
 - `.max(n)`
 - `.int()`
 - `.strict()` — like Zod’s `strict()`, unknown keys in `config` for that object are a **validation error** (the build fails with a list of keys).
+- `.extend(objectSchema)` — merge fields from another object schema; local fields win on conflicts.
 - `.secret()` — marks a **string field** as sensitive. The value **must** use `${ENV_VAR}` interpolation; hardcoded literals are rejected at validation time. Redacted as `"[secret]"` in `tcon print` debug output.
+
+For safety, secret string fields must not declare `.default(...)`; provide secret values through env-backed `config` values instead.
 
 ## Imports
 

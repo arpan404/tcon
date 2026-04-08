@@ -82,6 +82,8 @@ flowchart TD
   - Recomputes deterministic output and compares with on-disk files.
   - Exit `0` when no drift exists.
   - Exit non-zero when any file differs or fails to compile.
+- `tcon status [--entry <file.tcon>]`
+  - Reports per-entry health (`ok`, `drift`, `miss`, `error`) and exits non-zero when any entry needs attention.
 - `tcon diff [--entry <file.tcon>]`
   - Prints compact unified-style drift hunks for files with differences.
   - Exit `0` when there are no differences.
@@ -92,15 +94,20 @@ flowchart TD
   - Runs an initial build, then polls entry + transitive imports and rebuilds on timestamp changes. Configurable poll interval (default 800 ms, minimum 100).
 - Global: `--error-format text|json`
   - Controls stderr output format for automation/tooling integration (`code/message/file/line/col` in JSON mode).
+- Global: `--quiet` / `-q`
+  - Suppresses normal stdout progress output while preserving stderr errors.
 - `tcon init [--preset <name>] [--force]`
   - Scaffolds starter `.tcon` files for supported output presets.
+- `tcon secrets`
+  - Audits git-tracked/staged files and content heuristics for leaked secrets and missing ignore coverage.
 
 ## Implemented Scope
 
 - Output formats: JSON, YAML, ENV, TOML, PROPERTIES.
 - Schema roots: `t.string()`, `t.number()`, `t.boolean()`/`t.bool()`, `t.object({...})`, `t.array(...)`, `t.record(...)`, `t.literal(...)`, `t.enum([...])`, `t.union([...])`.
-- Supported modifiers: `.default(value)`, `.optional()`, `.min(n)`, `.max(n)`, `.int()`, `.strict()`.
+- Supported modifiers: `.default(value)`, `.optional()`, `.min(n)`, `.max(n)`, `.int()`, `.strict()`, `.secret()`, `.extend(objectSchema)`.
 - Imports: `import { symbol } from "./other.tcon";` with cycle detection and symbol validation.
+- Safety guards: `spec.path` is constrained to workspace-contained outputs (no absolute paths, traversal, or symlink escapes).
 
 ## Contributor Workflow
 

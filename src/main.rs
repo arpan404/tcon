@@ -457,6 +457,7 @@ fn compile_entry(
     let cfg = evaluate_config(&exports, &file_name)?;
     let normalized = validate(&schema, &cfg, &file_name)?;
     let output_path = ws.root.join(&spec.path);
+    ensure_output_path_within_workspace(&ws.root, &output_path, &file_name)?;
     let rendered = match spec.format.as_str() {
         "json" => format!("{}\n", to_pretty_json(&normalized)),
         "yaml" => format!("{}\n", to_yaml(&normalized)),
@@ -466,6 +467,46 @@ fn compile_entry(
         _ => unreachable!(),
     };
     Ok((output_path, rendered))
+}
+
+fn ensure_output_path_within_workspace(
+    workspace_root: &Path,
+    output_path: &Path,
+    file_name: &str,
+) -> Result<(), String> {
+    let root_canonical = fs::canonicalize(workspace_root).map_err(|e| {
+        format!(
+            "{file_name}: failed to resolve workspace root {}: {e}",
+            workspace_root.display()
+        )
+    })?;
+
+    let mut probe = output_path;
+    while !probe.exists() {
+        probe = probe.parent().ok_or_else(|| {
+            format!(
+                "{file_name}: spec.path '{}' resolves to an invalid filesystem location",
+                output_path.display()
+            )
+        })?;
+    }
+
+    let probe_canonical = fs::canonicalize(probe).map_err(|e| {
+        format!(
+            "{file_name}: failed to resolve output ancestor '{}': {e}",
+            probe.display()
+        )
+    })?;
+
+    if !probe_canonical.starts_with(&root_canonical) {
+        return Err(format!(
+            "{file_name}: spec.path '{}' escapes workspace root after symlink resolution (resolved ancestor: '{}')",
+            output_path.display(),
+            probe_canonical.display()
+        ));
+    }
+
+    Ok(())
 }
 
 fn run_status(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
@@ -518,7 +559,11 @@ fn run_status(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
                         );
                     }
                     Ok(_) => {
-                        let diff = describe_drift(&fs::read_to_string(&output).unwrap_or_default(), &expected, ansi);
+                        let diff = describe_drift(
+                            &fs::read_to_string(&output).unwrap_or_default(),
+                            &expected,
+                            ansi,
+                        );
                         println!(
                             "{warn}drift{rst}  {p}{entry_rel}{rst}  {d}→ {rel}  (on disk ≠ compiled){rst}",
                             warn = s.warn,
@@ -753,8 +798,19 @@ fn run_diff(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
 }
 
 fn redact_secrets(value: &Value, schema: &Schema) -> Value {
+    if schema.is_secret() {
+        return Value::String("[secret]".to_string());
+    }
+
     match (schema, value) {
-        (Schema::Object { fields, secret: false, .. }, Value::Object(map)) => {
+        (
+            Schema::Object {
+                fields,
+                secret: false,
+                ..
+            },
+            Value::Object(map),
+        ) => {
             let mut out = std::collections::BTreeMap::new();
             for (k, v) in map {
                 let redacted = if let Some(fs) = fields.get(k) {
@@ -766,7 +822,28 @@ fn redact_secrets(value: &Value, schema: &Schema) -> Value {
             }
             Value::Object(out)
         }
-        (schema, _v) if schema.is_secret() => Value::String("[secret]".to_string()),
+        (Schema::Array { item, .. }, Value::Array(items)) => Value::Array(
+            items
+                .iter()
+                .map(|item_value| redact_secrets(item_value, item))
+                .collect(),
+        ),
+        (Schema::Record { value: item, .. }, Value::Object(map)) => {
+            let mut out = std::collections::BTreeMap::new();
+            for (k, v) in map {
+                out.insert(k.clone(), redact_secrets(v, item));
+            }
+            Value::Object(out)
+        }
+        (Schema::Union { variants, .. }, v) => {
+            for variant in variants {
+                let candidate = redact_secrets(v, variant);
+                if candidate != *v {
+                    return candidate;
+                }
+            }
+            v.clone()
+        }
         (_, v) => v.clone(),
     }
 }
@@ -785,32 +862,44 @@ fn run_print(ws: &Workspace, entry: &str) -> Result<(), String> {
     let mut cache = LoadCache::default();
     let exports = load_program_cached(&path, &mut cache)?;
     match evaluate_schema(&exports, &file_name) {
-        Ok(schema) => {
-            match evaluate_config(&exports, &file_name) {
-                Ok(cfg) => {
-                    match validate(&schema, &cfg, &file_name) {
-                        Ok(normalized) => {
-                            let display = redact_secrets(&normalized, &schema);
-                            println!();
-                            println!("{bold}── evaluated config (secrets redacted) ──{r}", bold = s.bold, r = s.reset);
-                            println!("{display:#?}");
-                        }
-                        Err(e) => {
-                            println!();
-                            println!("{warn}── evaluated config (validation failed) ──{r}", warn = s.warn, r = s.reset);
-                            println!("{e}");
-                        }
-                    }
+        Ok(schema) => match evaluate_config(&exports, &file_name) {
+            Ok(cfg) => match validate(&schema, &cfg, &file_name) {
+                Ok(normalized) => {
+                    let display = redact_secrets(&normalized, &schema);
+                    println!();
+                    println!(
+                        "{bold}── evaluated config (secrets redacted) ──{r}",
+                        bold = s.bold,
+                        r = s.reset
+                    );
+                    println!("{display:#?}");
                 }
                 Err(e) => {
                     println!();
-                    println!("{d}(config evaluation skipped: {e}){r}", d = s.dim, r = s.reset);
+                    println!(
+                        "{warn}── evaluated config (validation failed) ──{r}",
+                        warn = s.warn,
+                        r = s.reset
+                    );
+                    println!("{e}");
                 }
+            },
+            Err(e) => {
+                println!();
+                println!(
+                    "{d}(config evaluation skipped: {e}){r}",
+                    d = s.dim,
+                    r = s.reset
+                );
             }
-        }
+        },
         Err(e) => {
             println!();
-            println!("{d}(schema evaluation skipped: {e}){r}", d = s.dim, r = s.reset);
+            println!(
+                "{d}(schema evaluation skipped: {e}){r}",
+                d = s.dim,
+                r = s.reset
+            );
         }
     }
     Ok(())
@@ -978,35 +1067,86 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DiagnosticCode {
+    LexUnexpectedChar,
+    LexUnterminatedString,
+    LexUnterminatedBlockComment,
+    EvalMissingExport,
+    ImportCycle,
+    ValidateEnum,
+    ValidateStrictUnknownKey,
+    ValidateSecret,
+    SpecUnknownKey,
+    SpecFormat,
+    SpecPathEscape,
+    EmitNullUnsupported,
+    OutputCollision,
+    EnvInterpolation,
+    ParseOrSchema,
+    Runtime,
+}
+
+impl DiagnosticCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            DiagnosticCode::LexUnexpectedChar => "E_LEX_UNEXPECTED_CHAR",
+            DiagnosticCode::LexUnterminatedString => "E_LEX_UNTERMINATED_STRING",
+            DiagnosticCode::LexUnterminatedBlockComment => "E_LEX_UNTERMINATED_BLOCK_COMMENT",
+            DiagnosticCode::EvalMissingExport => "E_EVAL_MISSING_EXPORT",
+            DiagnosticCode::ImportCycle => "E_IMPORT_CYCLE",
+            DiagnosticCode::ValidateEnum => "E_VALIDATE_ENUM",
+            DiagnosticCode::ValidateStrictUnknownKey => "E_VALIDATE_STRICT_UNKNOWN_KEY",
+            DiagnosticCode::ValidateSecret => "E_VALIDATE_SECRET",
+            DiagnosticCode::SpecUnknownKey => "E_SPEC_UNKNOWN_KEY",
+            DiagnosticCode::SpecFormat => "E_SPEC_FORMAT",
+            DiagnosticCode::SpecPathEscape => "E_SPEC_PATH_ESCAPE",
+            DiagnosticCode::EmitNullUnsupported => "E_EMIT_NULL_UNSUPPORTED",
+            DiagnosticCode::OutputCollision => "E_OUTPUT_COLLISION",
+            DiagnosticCode::EnvInterpolation => "E_ENV_INTERPOLATION",
+            DiagnosticCode::ParseOrSchema => "E_PARSE_OR_SCHEMA",
+            DiagnosticCode::Runtime => "E_RUNTIME",
+        }
+    }
+}
+
 fn classify_error_code(message: &str) -> &'static str {
-    if message.contains("unexpected character") {
-        return "E_LEX_UNEXPECTED_CHAR";
-    }
-    if message.contains("unterminated string literal") {
-        return "E_LEX_UNTERMINATED_STRING";
-    }
-    if message.contains("unterminated block comment") {
-        return "E_LEX_UNTERMINATED_BLOCK_COMMENT";
-    }
-    if message.contains("missing required export") {
-        return "E_EVAL_MISSING_EXPORT";
-    }
-    if message.contains("circular import detected") {
-        return "E_IMPORT_CYCLE";
-    }
-    if message.contains("enum value not in allowed variants") {
-        return "E_VALIDATE_ENUM";
-    }
-    if message.contains("unknown key(s) in strict object") {
-        return "E_VALIDATE_STRICT_UNKNOWN_KEY";
-    }
-    if message.contains("unknown key in spec object") {
-        return "E_SPEC_UNKNOWN_KEY";
-    }
-    if message.contains("unsupported spec.format") {
-        return "E_SPEC_FORMAT";
-    }
-    if message.contains("expected ")
+    let code = if message.contains("unexpected character") {
+        DiagnosticCode::LexUnexpectedChar
+    } else if message.contains("unterminated string literal") {
+        DiagnosticCode::LexUnterminatedString
+    } else if message.contains("unterminated block comment") {
+        DiagnosticCode::LexUnterminatedBlockComment
+    } else if message.contains("missing required export") {
+        DiagnosticCode::EvalMissingExport
+    } else if message.contains("circular import detected") {
+        DiagnosticCode::ImportCycle
+    } else if message.contains("enum value not in allowed variants") {
+        DiagnosticCode::ValidateEnum
+    } else if message.contains("unknown key(s) in strict object") {
+        DiagnosticCode::ValidateStrictUnknownKey
+    } else if message.contains("secret field must") || message.contains(".secret()") {
+        DiagnosticCode::ValidateSecret
+    } else if message.contains("unknown key in spec object") {
+        DiagnosticCode::SpecUnknownKey
+    } else if message.contains("unsupported spec.format") {
+        DiagnosticCode::SpecFormat
+    } else if message.contains("escapes workspace root after symlink resolution")
+        || message.contains("path traversal outside workspace")
+    {
+        DiagnosticCode::SpecPathEscape
+    } else if message.contains("output collision: multiple .tcon sources emit to") {
+        DiagnosticCode::OutputCollision
+    } else if message.contains("env variable")
+        && (message.contains("not set") || message.contains("interpolation"))
+    {
+        DiagnosticCode::EnvInterpolation
+    } else if message.contains("cannot emit null")
+        || message.contains("cannot represent null")
+        || message.contains("toml emitter cannot represent null")
+    {
+        DiagnosticCode::EmitNullUnsupported
+    } else if message.contains("expected ")
         || message.contains("unsupported schema")
         || message.contains("t.union() requires")
         || message.contains("t.enum() requires")
@@ -1014,9 +1154,11 @@ fn classify_error_code(message: &str) -> &'static str {
         || message.contains("duplicate key in object literal")
         || message.contains("import requires at least one binding")
     {
-        return "E_PARSE_OR_SCHEMA";
-    }
-    "E_RUNTIME"
+        DiagnosticCode::ParseOrSchema
+    } else {
+        DiagnosticCode::Runtime
+    };
+    code.as_str()
 }
 
 fn parse_diagnostic(message: &str) -> DiagnosticJson {
@@ -1268,38 +1410,38 @@ export const config = {
 
 /// Patterns for files that commonly carry secrets and should NOT be git-tracked.
 const SECRET_PATTERNS: &[(&str, &str)] = &[
-    (".env",          "environment variable file"),
-    (".env.local",    "local environment overrides"),
-    (".env.dev",      "dev environment file"),
-    (".env.prod",     "production environment file"),
-    (".env.staging",  "staging environment file"),
-    (".env.test",     "test environment file"),
-    (".env.example",  "example env (may contain real values)"),
-    (".envrc",        "direnv file"),
-    ("*.pem",         "PEM certificate/key"),
-    ("*.key",         "private key"),
-    ("*.p12",         "PKCS#12 keystore"),
-    ("*.pfx",         "PFX certificate"),
-    ("*.jks",         "Java KeyStore"),
-    ("*.keystore",    "keystore file"),
-    ("id_rsa",        "RSA private key"),
-    ("id_ed25519",    "Ed25519 private key"),
-    ("id_ecdsa",      "ECDSA private key"),
-    ("id_dsa",        "DSA private key"),
-    ("secrets.yaml",  "secrets manifest"),
-    ("secrets.yml",   "secrets manifest"),
-    ("secrets.json",  "secrets manifest"),
-    ("secrets.toml",  "secrets manifest"),
-    ("credentials",   "credentials file"),
+    (".env", "environment variable file"),
+    (".env.local", "local environment overrides"),
+    (".env.dev", "dev environment file"),
+    (".env.prod", "production environment file"),
+    (".env.staging", "staging environment file"),
+    (".env.test", "test environment file"),
+    (".env.example", "example env (may contain real values)"),
+    (".envrc", "direnv file"),
+    ("*.pem", "PEM certificate/key"),
+    ("*.key", "private key"),
+    ("*.p12", "PKCS#12 keystore"),
+    ("*.pfx", "PFX certificate"),
+    ("*.jks", "Java KeyStore"),
+    ("*.keystore", "keystore file"),
+    ("id_rsa", "RSA private key"),
+    ("id_ed25519", "Ed25519 private key"),
+    ("id_ecdsa", "ECDSA private key"),
+    ("id_dsa", "DSA private key"),
+    ("secrets.yaml", "secrets manifest"),
+    ("secrets.yml", "secrets manifest"),
+    ("secrets.json", "secrets manifest"),
+    ("secrets.toml", "secrets manifest"),
+    ("credentials", "credentials file"),
     ("credentials.json", "credentials file"),
     ("service-account.json", "GCP service account key"),
-    ("*.secret",      "generic secret file"),
-    (".npmrc",        "npm registry config (may contain tokens)"),
-    (".pypirc",       "PyPI credentials"),
-    ("htpasswd",      "Apache password file"),
-    (".htpasswd",     "Apache password file"),
-    ("vault.hcl",     "HashiCorp Vault config"),
-    ("vault.yml",     "HashiCorp Vault config"),
+    ("*.secret", "generic secret file"),
+    (".npmrc", "npm registry config (may contain tokens)"),
+    (".pypirc", "PyPI credentials"),
+    ("htpasswd", "Apache password file"),
+    (".htpasswd", "Apache password file"),
+    ("vault.hcl", "HashiCorp Vault config"),
+    ("vault.yml", "HashiCorp Vault config"),
 ];
 
 /// Check whether a file path matches any of the secret patterns (glob-style
@@ -1424,8 +1566,8 @@ fn run_secrets_audit() -> Result<(), String> {
     let se = Theme::for_stderr();
 
     // ── 1. Check git is available and we're in a repo ──────────────────────
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("failed to read current directory: {e}"))?;
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
     let git_root_out = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(&cwd)
@@ -1433,9 +1575,7 @@ fn run_secrets_audit() -> Result<(), String> {
         .map_err(|e| format!("failed to run git: {e} (is git installed?)"))?;
 
     if !git_root_out.status.success() {
-        return Err(
-            "not inside a git repository — secrets audit requires a git repo".to_string(),
-        );
+        return Err("not inside a git repository — secrets audit requires a git repo".to_string());
     }
     let git_root = PathBuf::from(
         String::from_utf8_lossy(&git_root_out.stdout)
@@ -1524,11 +1664,7 @@ fn run_secrets_audit() -> Result<(), String> {
     }
 
     // ── 6. Print report ──────────────────────────────────────────────────────
-    println!(
-        "{ti}tcon secrets audit{r}",
-        ti = s.title,
-        r = s.reset
-    );
+    println!("{ti}tcon secrets audit{r}", ti = s.title, r = s.reset);
     println!(
         "{d}Scans git-tracked files and .gitignore for exposed secrets.{r}",
         d = s.dim,
@@ -1725,7 +1861,6 @@ fn run_secrets_audit() -> Result<(), String> {
     }
 }
 
-
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let (error_format, quiet, cmd, rest) = match parse_global_args(&args) {
@@ -1768,9 +1903,7 @@ fn main() {
     };
 
     let result = match cmd.as_str() {
-        "validate" => {
-            parse_optional_entry(&rest).and_then(|entry| run_validate(&ws, entry, quiet))
-        }
+        "validate" => parse_optional_entry(&rest).and_then(|entry| run_validate(&ws, entry, quiet)),
         "build" | "generate" => {
             parse_optional_entry(&rest).and_then(|entry| run_build(&ws, entry, quiet))
         }

@@ -197,7 +197,11 @@ fn validate_node(
             Value::Number(n.clone())
         }
 
-        Schema::Boolean { default, optional, secret: _ } => {
+        Schema::Boolean {
+            default,
+            optional,
+            secret: _,
+        } => {
             let v = match (provided, default) {
                 (Some(v), _) => v.clone(),
                 (None, Some(d)) => d.clone(),
@@ -519,6 +523,7 @@ pub fn validate_secret_fields(
     file_name: &str,
 ) -> Result<(), String> {
     let mut errors = Vec::new();
+    check_secret_schema_defaults(schema, "schema", file_name, &mut errors);
     check_secret_expr(schema, expr, "config", file_name, &mut errors);
     if errors.is_empty() {
         Ok(())
@@ -532,11 +537,7 @@ fn contains_unescaped_interpolation(s: &str) -> bool {
     let mut i = 0usize;
     while i < bytes.len() {
         // Escaped interpolation marker: $${ -> literal ${
-        if i + 2 < bytes.len()
-            && bytes[i] == b'$'
-            && bytes[i + 1] == b'$'
-            && bytes[i + 2] == b'{'
-        {
+        if i + 2 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'$' && bytes[i + 2] == b'{' {
             i += 3;
             continue;
         }
@@ -589,5 +590,108 @@ fn check_secret_expr(
                 );
             }
         }
+    }
+
+    // Recurse into homogeneous arrays.
+    if let Schema::Array { item, .. } = schema
+        && let Expr::Array(items, _) = expr
+    {
+        for (idx, (item_expr, _)) in items.iter().enumerate() {
+            check_secret_expr(
+                item,
+                item_expr,
+                &format!("{path}[{idx}]"),
+                file_name,
+                errors,
+            );
+        }
+    }
+
+    // Recurse into homogeneous records.
+    if let Schema::Record { value, .. } = schema
+        && let Expr::Object(kv_pairs, _) = expr
+    {
+        for (k, v, _) in kv_pairs {
+            let key_name = match k {
+                Key::Ident(s) | Key::String(s) => s.as_str(),
+            };
+            check_secret_expr(value, v, &format!("{path}.{key_name}"), file_name, errors);
+        }
+    }
+
+    // For unions, only recurse into variants whose shape can match this expression.
+    // This avoids false positives from unrelated variants.
+    if let Schema::Union { variants, .. } = schema {
+        for variant in variants {
+            if expr_might_match_schema(variant, expr) {
+                check_secret_expr(variant, expr, path, file_name, errors);
+            }
+        }
+    }
+}
+
+fn check_secret_schema_defaults(
+    schema: &Schema,
+    path: &str,
+    file_name: &str,
+    errors: &mut Vec<String>,
+) {
+    match schema {
+        Schema::String {
+            default: Some(_),
+            secret: true,
+            ..
+        } => {
+            errors.push(format!(
+                "{file_name}: {path}: secret field must not declare .default(...); source secret values from environment variables in config"
+            ));
+        }
+        Schema::Object { fields, .. } => {
+            for (name, field_schema) in fields {
+                check_secret_schema_defaults(
+                    field_schema,
+                    &format!("{path}.{name}"),
+                    file_name,
+                    errors,
+                );
+            }
+        }
+        Schema::Array { item, .. } => {
+            check_secret_schema_defaults(item, &format!("{path}[]"), file_name, errors);
+        }
+        Schema::Record { value, .. } => {
+            check_secret_schema_defaults(value, &format!("{path}.<record>"), file_name, errors);
+        }
+        Schema::Union { variants, .. } => {
+            for (idx, variant) in variants.iter().enumerate() {
+                check_secret_schema_defaults(
+                    variant,
+                    &format!("{path}|variant{idx}"),
+                    file_name,
+                    errors,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn expr_might_match_schema(schema: &Schema, expr: &crate::model::Expr) -> bool {
+    use crate::model::Expr;
+
+    match schema {
+        Schema::String { .. } | Schema::Enum { .. } => matches!(expr, Expr::String(_, _)),
+        Schema::Number { .. } => matches!(expr, Expr::Number(_, _)),
+        Schema::Boolean { .. } => matches!(expr, Expr::Bool(_, _)),
+        Schema::Object { .. } | Schema::Record { .. } => matches!(expr, Expr::Object(_, _)),
+        Schema::Array { .. } => matches!(expr, Expr::Array(_, _)),
+        Schema::Literal { value, .. } => match value {
+            Value::String(_) => matches!(expr, Expr::String(_, _)),
+            Value::Number(_) => matches!(expr, Expr::Number(_, _)),
+            Value::Bool(_) => matches!(expr, Expr::Bool(_, _)),
+            Value::Null => matches!(expr, Expr::Null(_)),
+            _ => false,
+        },
+        Schema::Union { variants, .. } => variants.iter().any(|v| expr_might_match_schema(v, expr)),
     }
 }

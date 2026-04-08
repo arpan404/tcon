@@ -56,11 +56,7 @@ pub fn interpolate_env(s: &str, file_name: &str) -> Result<String, String> {
 
     while i < bytes.len() {
         // Escaped: $${ → literal ${
-        if i + 2 < bytes.len()
-            && bytes[i] == b'$'
-            && bytes[i + 1] == b'$'
-            && bytes[i + 2] == b'{'
-        {
+        if i + 2 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'$' && bytes[i + 2] == b'{' {
             result.push_str("${");
             i += 3;
             continue;

@@ -149,7 +149,10 @@ export const config = { port: 3000 };
         "no prior build artifact"
     );
     let chk = run(&root, &["check"]);
-    assert!(!chk.status.success(), "check should fail when spec.path is missing");
+    assert!(
+        !chk.status.success(),
+        "check should fail when spec.path is missing"
+    );
     let out = String::from_utf8_lossy(&chk.stdout);
     assert!(
         out.contains("file missing on disk"),

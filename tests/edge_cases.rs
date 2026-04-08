@@ -1420,7 +1420,10 @@ export const config = {};
 "#,
     );
     let out = run(&root, &["build"]);
-    assert!(!out.status.success(), "two .tcon files writing same path must fail");
+    assert!(
+        !out.status.success(),
+        "two .tcon files writing same path must fail"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("collision") || stderr.contains("shared.json"),
@@ -1444,7 +1447,10 @@ export const config = { mode: "dev" };
 "#,
     );
     let out = run(&root, &["build", "--entry", "x.tcon"]);
-    assert!(!out.status.success(), "duplicate enum variant must be rejected");
+    assert!(
+        !out.status.success(),
+        "duplicate enum variant must be rejected"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("duplicate variant") || stderr.contains("duplicate"),
@@ -1468,7 +1474,10 @@ export const config = { port: 50 };
 "#,
     );
     let out = run(&root, &["build", "--entry", "x.tcon"]);
-    assert!(!out.status.success(), "inverted number bounds must be rejected");
+    assert!(
+        !out.status.success(),
+        "inverted number bounds must be rejected"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("inverted") || stderr.contains("bounds"),
@@ -1490,7 +1499,10 @@ export const config = { name: "hi" };
 "#,
     );
     let out = run(&root, &["build", "--entry", "x.tcon"]);
-    assert!(!out.status.success(), "inverted string bounds must be rejected");
+    assert!(
+        !out.status.success(),
+        "inverted string bounds must be rejected"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("inverted") || stderr.contains("bounds"),
@@ -1744,7 +1756,11 @@ export const config = { password: "${APP_PASSWORD}" };
         .env("APP_PASSWORD", "super-secret")
         .output()
         .expect("spawn");
-    assert!(out.status.success(), "secret interpolation should pass: {:?}", out);
+    assert!(
+        out.status.success(),
+        "secret interpolation should pass: {:?}",
+        out
+    );
     let json = fs::read_to_string(root.join("out.json")).expect("read");
     assert!(json.contains("super-secret"), "{json}");
 }
@@ -1889,8 +1905,14 @@ export const config = { port: 3000 };
     assert!(out.status.success(), "build failed: {:?}", out);
     let json = fs::read_to_string(root.join("server.json")).expect("read");
     assert!(json.contains("\"port\": 3000"), "port missing: {json}");
-    assert!(json.contains("\"host\": \"0.0.0.0\""), "host missing: {json}");
-    assert!(json.contains("\"name\": \"my-service\""), "name missing: {json}");
+    assert!(
+        json.contains("\"host\": \"0.0.0.0\""),
+        "host missing: {json}"
+    );
+    assert!(
+        json.contains("\"name\": \"my-service\""),
+        "name missing: {json}"
+    );
 }
 
 #[test]
@@ -1914,8 +1936,14 @@ export const config = {};
     assert!(out.status.success(), "build failed: {:?}", out);
     let json = fs::read_to_string(root.join("out.json")).expect("read");
     // Child's timeout (60) must win over base's timeout (30)
-    assert!(json.contains("\"timeout\": 60"), "child timeout should win: {json}");
-    assert!(json.contains("\"retries\": 3"), "retries from base missing: {json}");
+    assert!(
+        json.contains("\"timeout\": 60"),
+        "child timeout should win: {json}"
+    );
+    assert!(
+        json.contains("\"retries\": 3"),
+        "retries from base missing: {json}"
+    );
 }
 
 #[test]
@@ -1956,10 +1984,7 @@ export const config = {};
     assert!(out.status.success(), "status should succeed: {:?}", out);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("ok"), "should show ok: {stdout}");
-    assert!(
-        stdout.contains("1/1"),
-        "should show 1/1 summary: {stdout}"
-    );
+    assert!(stdout.contains("1/1"), "should show 1/1 summary: {stdout}");
 }
 
 #[test]
@@ -1974,7 +1999,10 @@ export const config = {};
 "#,
     );
     let out = run(&root, &["status"]);
-    assert!(!out.status.success(), "status should fail when output missing");
+    assert!(
+        !out.status.success(),
+        "status should fail when output missing"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("miss") || stdout.contains("missing"),
@@ -2008,7 +2036,10 @@ export const config = {};
     );
     // status should report the error for bad.tcon but not crash
     let out = run(&root, &["status"]);
-    assert!(!out.status.success(), "status exits non-zero when any entry has an error");
+    assert!(
+        !out.status.success(),
+        "status exits non-zero when any entry has an error"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("error") || stdout.contains("bad.tcon"),
@@ -2040,7 +2071,10 @@ export const config = {};
         stdout.is_empty(),
         "stdout should be empty with --quiet: '{stdout}'"
     );
-    assert!(root.join("out.json").exists(), "file should still be written");
+    assert!(
+        root.join("out.json").exists(),
+        "file should still be written"
+    );
 }
 
 #[test]
@@ -2062,5 +2096,186 @@ export const config = { n: "wrong" };
     assert!(
         stderr.contains("expected number"),
         "error should still appear on stderr: {stderr}"
+    );
+}
+
+#[test]
+fn secret_default_is_rejected() {
+    let root = mk_workspace("secret_default_rejected");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  password: t.string().secret().default("fallback-secret"),
+}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(!out.status.success(), "secret default must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_VALIDATE_SECRET");
+    assert!(
+        stderr.contains("must not declare .default"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn nested_secret_in_array_rejects_hardcoded_literal() {
+    let root = mk_workspace("secret_array_hardcoded");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  creds: t.array(t.string().secret()),
+}).strict();
+export const config = { creds: ["hardcoded"] };
+"#,
+    );
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(
+        !out.status.success(),
+        "hardcoded nested array secret must fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_VALIDATE_SECRET");
+    assert!(
+        stderr.contains("config.creds[0]") || stderr.contains("secret field must"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn nested_secret_in_record_rejects_hardcoded_literal() {
+    let root = mk_workspace("secret_record_hardcoded");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  tokens: t.record(t.string().secret()),
+}).strict();
+export const config = { tokens: { serviceA: "abc123" } };
+"#,
+    );
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(
+        !out.status.success(),
+        "hardcoded nested record secret must fail"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_VALIDATE_SECRET");
+    assert!(
+        stderr.contains("config.tokens.serviceA") || stderr.contains("secret field must"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn nested_secret_in_union_rejects_hardcoded_string() {
+    let root = mk_workspace("secret_union_hardcoded");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  credential: t.union([t.string().secret(), t.number()]),
+}).strict();
+export const config = { credential: "plaintext" };
+"#,
+    );
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(!out.status.success(), "hardcoded secret in union must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_VALIDATE_SECRET");
+}
+
+#[test]
+fn nested_secret_redacted_in_print_output() {
+    let root = mk_workspace("secret_print_redaction");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  creds: t.array(t.string().secret()),
+}).strict();
+export const config = { creds: ["${APP_PASSWORD}"] };
+"#,
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_tcon"))
+        .args(["print", "--entry", "x.tcon"])
+        .current_dir(&root)
+        .env("APP_PASSWORD", "super-secret-from-env")
+        .output()
+        .expect("spawn print");
+    assert!(out.status.success(), "print should succeed: {:?}", out);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("[secret]"),
+        "print output should contain redaction marker: {stdout}"
+    );
+    assert!(
+        !stdout.contains("super-secret-from-env"),
+        "print output must not leak resolved secret: {stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_escape_for_spec_path_is_rejected() {
+    use std::os::unix::fs as unix_fs;
+
+    let root = mk_workspace("symlink_escape");
+    let outside = std::env::temp_dir().join(format!(
+        "tcon_symlink_escape_outside_{}_{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    fs::create_dir_all(&outside).expect("create outside dir");
+
+    let link_path = root.join("leak");
+    unix_fs::symlink(&outside, &link_path).expect("create symlink");
+
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "leak/escaped.json", format: "json" };
+export const schema = t.object({ ok: t.boolean().default(true) }).strict();
+export const config = {};
+"#,
+    );
+
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(
+        !out.status.success(),
+        "symlink escape path should be rejected"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_SPEC_PATH_ESCAPE");
+    assert!(
+        stderr.contains("escapes workspace root") || stderr.contains("symlink"),
+        "unexpected stderr: {stderr}"
     );
 }

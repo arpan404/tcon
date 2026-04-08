@@ -53,24 +53,44 @@ pub fn describe_drift(actual: &str, expected: &str, color: bool) -> String {
                 break;
             }
             if i + 1 < a.len() && j < e.len() && a[i + 1] == e[j] {
-                out.push_str(&format!("  {minus}-{reset}{}\n", a[i], minus = minus, reset = reset));
+                out.push_str(&format!(
+                    "  {minus}-{reset}{}\n",
+                    a[i],
+                    minus = minus,
+                    reset = reset
+                ));
                 i += 1;
                 printed += 1;
                 continue;
             }
             if j + 1 < e.len() && i < a.len() && a[i] == e[j + 1] {
-                out.push_str(&format!("  {plus}+{reset}{}\n", e[j], plus = plus, reset = reset));
+                out.push_str(&format!(
+                    "  {plus}+{reset}{}\n",
+                    e[j],
+                    plus = plus,
+                    reset = reset
+                ));
                 j += 1;
                 printed += 1;
                 continue;
             }
             if i < a.len() {
-                out.push_str(&format!("  {minus}-{reset}{}\n", a[i], minus = minus, reset = reset));
+                out.push_str(&format!(
+                    "  {minus}-{reset}{}\n",
+                    a[i],
+                    minus = minus,
+                    reset = reset
+                ));
                 i += 1;
                 printed += 1;
             }
             if j < e.len() && printed < 4 {
-                out.push_str(&format!("  {plus}+{reset}{}\n", e[j], plus = plus, reset = reset));
+                out.push_str(&format!(
+                    "  {plus}+{reset}{}\n",
+                    e[j],
+                    plus = plus,
+                    reset = reset
+                ));
                 j += 1;
                 printed += 1;
             }

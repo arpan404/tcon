@@ -6,10 +6,7 @@ pub fn to_env(value: &Value) -> Result<String, String> {
     flatten(value, "", &mut pairs)?;
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
     detect_key_collision(&pairs)?;
-    let lines: Vec<String> = pairs
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
+    let lines: Vec<String> = pairs.into_iter().map(|(k, v)| format!("{k}={v}")).collect();
     Ok(lines.join("\n"))
 }
 

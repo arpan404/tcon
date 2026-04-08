@@ -23,9 +23,9 @@ fn eval_chain(
     match expr {
         // Identifier → resolve from exports (enables reuse / extend)
         Expr::Ident(name, _) => {
-            let resolved = exports.get(name.as_str()).ok_or_else(|| {
-                format!("{file_name}: undefined schema identifier '{name}'")
-            })?;
+            let resolved = exports
+                .get(name.as_str())
+                .ok_or_else(|| format!("{file_name}: undefined schema identifier '{name}'"))?;
             eval_chain(resolved, exports, file_name)
         }
         Expr::Call(callee, args, _) => match callee.as_ref() {
@@ -166,9 +166,7 @@ fn build_base(
             let mut seen_v = std::collections::BTreeSet::new();
             for s in &variants {
                 if !seen_v.insert(s.as_str()) {
-                    return Err(format!(
-                        "{file_name}: t.enum() has duplicate variant '{s}'"
-                    ));
+                    return Err(format!("{file_name}: t.enum() has duplicate variant '{s}'"));
                 }
             }
             Ok(Schema::Enum {
@@ -321,12 +319,19 @@ fn apply_method(
                 ));
             }
             let ext = eval_chain(&args[0], exports, file_name)?;
-            let Schema::Object { fields: base_fields, .. } = schema else {
+            let Schema::Object {
+                fields: base_fields,
+                ..
+            } = schema
+            else {
                 return Err(format!(
                     "{file_name}: .extend() is only valid on an object schema"
                 ));
             };
-            let Schema::Object { fields: ext_fields, .. } = ext else {
+            let Schema::Object {
+                fields: ext_fields, ..
+            } = ext
+            else {
                 return Err(format!(
                     "{file_name}: .extend() argument must be an object schema"
                 ));
@@ -347,7 +352,9 @@ fn apply_method(
                     set_secret(schema, true);
                     Ok(())
                 }
-                _ => Err(format!("{file_name}: .secret() only valid on string schema")),
+                _ => Err(format!(
+                    "{file_name}: .secret() only valid on string schema"
+                )),
             }
         }
         _ => Err(format!(

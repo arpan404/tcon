@@ -73,7 +73,7 @@ export const schema = t.object({
 }).strict();
 ```
 
-**Enforcement**: `tcon validate` and `tcon build` will error if a field marked `.secret()` has a hardcoded literal value in `config`. Secret fields must be sourced via environment variable interpolation:
+**Enforcement**: `tcon validate` and `tcon build` will error if a field marked `.secret()` has a hardcoded literal value in `config`. This is enforced recursively (nested objects, arrays, records, and matching union variants). Secret fields must be sourced via environment variable interpolation:
 
 ```ts
 // ✗ error: password is secret — must use ${VAR} interpolation
@@ -86,6 +86,8 @@ export const config = {
   password: "${DB_PASSWORD}",
 };
 ```
+
+`t.string().secret()` fields must not declare `.default(...)`; provide the value from env-backed `config` instead.
 
 **Redaction in `print`**: `tcon print` shows evaluated config with secret fields replaced by `"[secret]"` so no plaintext secrets appear in debug output.
 
