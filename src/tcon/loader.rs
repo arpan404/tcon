@@ -6,21 +6,27 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn load_program(path: &Path) -> Result<(BTreeMap<String, Expr>, String), String> {
+#[derive(Default)]
+pub struct LoadCache {
+    exports: BTreeMap<PathBuf, BTreeMap<String, Expr>>,
+}
+
+pub fn load_program_cached(
+    path: &Path,
+    cache: &mut LoadCache,
+) -> Result<BTreeMap<String, Expr>, String> {
     let mut stack = BTreeSet::new();
-    let mut cache = BTreeMap::new();
-    let exports = load_program_inner(path, &mut stack, &mut cache)?;
-    Ok((exports, path.display().to_string()))
+    load_program_inner(path, &mut stack, cache)
 }
 
 fn load_program_inner(
     path: &Path,
     stack: &mut BTreeSet<PathBuf>,
-    cache: &mut BTreeMap<PathBuf, BTreeMap<String, Expr>>,
+    cache: &mut LoadCache,
 ) -> Result<BTreeMap<String, Expr>, String> {
     let canonical = fs::canonicalize(path)
         .map_err(|e| format!("{}: failed to resolve path: {}", path.display(), e))?;
-    if let Some(existing) = cache.get(&canonical) {
+    if let Some(existing) = cache.exports.get(&canonical) {
         return Ok(existing.clone());
     }
     if stack.contains(&canonical) {
@@ -38,7 +44,7 @@ fn load_program_inner(
     let program = parse(&tokens, &file_name, &src)?;
     let exports = exports_map(program, &canonical, stack, cache)?;
     stack.remove(&canonical);
-    cache.insert(canonical, exports.clone());
+    cache.exports.insert(canonical, exports.clone());
     Ok(exports)
 }
 
@@ -46,7 +52,7 @@ fn exports_map(
     program: Program,
     current_file: &Path,
     stack: &mut BTreeSet<PathBuf>,
-    cache: &mut BTreeMap<PathBuf, BTreeMap<String, Expr>>,
+    cache: &mut LoadCache,
 ) -> Result<BTreeMap<String, Expr>, String> {
     let file_name = current_file.display().to_string();
     let mut out = BTreeMap::new();

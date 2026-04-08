@@ -4,6 +4,10 @@
 
 It compiles `.tcon` files (TypeScript-like DSL) into deterministic config outputs and detects drift.
 
+## Project maturity
+
+`tcon` is in a pre-v1 production-hardening phase. Breaking changes are still allowed while we lock the v1 DSL/runtime contract.
+
 ## Commands
 
 - `tcon build [--entry <file.tcon>]` - generate output files
@@ -46,3 +50,9 @@ import { sharedSchema, sharedConfig } from "./base.tcon";
 export const schema = sharedSchema;
 export const config = sharedConfig;
 ```
+
+## Local quality gates
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets`

@@ -11,7 +11,9 @@ use crate::emit::env::to_env;
 use crate::emit::json::to_pretty_json;
 use crate::emit::yaml::to_yaml;
 use crate::eval::{evaluate_config, evaluate_schema, evaluate_spec};
-use crate::tcon::loader::{collect_dependency_files, load_program, load_unresolved_program};
+use crate::tcon::loader::{
+    LoadCache, collect_dependency_files, load_program_cached, load_unresolved_program,
+};
 use crate::validate::validator::validate;
 use crate::workspace::Workspace;
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,8 +56,13 @@ fn resolve_entries(ws: &Workspace, entry: Option<&str>) -> Result<Vec<PathBuf>, 
     }
 }
 
-fn compile_entry(ws: &Workspace, entry_file: &Path) -> Result<(PathBuf, String), String> {
-    let (exports, file_name) = load_program(entry_file)?;
+fn compile_entry(
+    ws: &Workspace,
+    entry_file: &Path,
+    cache: &mut LoadCache,
+) -> Result<(PathBuf, String), String> {
+    let exports = load_program_cached(entry_file, cache)?;
+    let file_name = entry_file.display().to_string();
     let spec = evaluate_spec(&exports, &file_name)?;
     if !matches!(spec.format.as_str(), "json" | "yaml" | "env") {
         return Err(format!(
@@ -102,8 +109,9 @@ fn run_build(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
         return Err("no .tcon files found under .tcon/".to_string());
     }
 
+    let mut cache = LoadCache::default();
     for entry_file in entries {
-        let (output, rendered) = compile_entry(ws, &entry_file)?;
+        let (output, rendered) = compile_entry(ws, &entry_file, &mut cache)?;
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("failed creating output directory: {e}"))?;
@@ -123,9 +131,10 @@ fn run_check(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
         return Err("no .tcon files found under .tcon/".to_string());
     }
 
+    let mut cache = LoadCache::default();
     let mut drift = 0usize;
     for entry_file in entries {
-        let (output, expected) = compile_entry(ws, &entry_file)?;
+        let (output, expected) = compile_entry(ws, &entry_file, &mut cache)?;
         let actual = fs::read_to_string(&output).unwrap_or_default();
         if actual != expected {
             drift += 1;
@@ -154,9 +163,10 @@ fn run_diff(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
         return Err("no .tcon files found under .tcon/".to_string());
     }
 
+    let mut cache = LoadCache::default();
     let mut drift = 0usize;
     for entry_file in entries {
-        let (output, expected) = compile_entry(ws, &entry_file)?;
+        let (output, expected) = compile_entry(ws, &entry_file, &mut cache)?;
         let actual = fs::read_to_string(&output).unwrap_or_default();
         if actual != expected {
             drift += 1;
