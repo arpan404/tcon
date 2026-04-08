@@ -1,0 +1,6 @@
+export const spec = { path: "json_defaults.json", format: "json" };
+export const schema = t.object({
+  host: t.string().default("0.0.0.0"),
+  port: t.number().int().default(8080),
+}).strict();
+export const config = { port: 3000 };

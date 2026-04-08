@@ -13,6 +13,17 @@ fn mk_workspace(name: &str) -> PathBuf {
     root
 }
 
+fn mk_plain_workspace(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("tcon_plain_{name}_{nanos}_{}", std::process::id()));
+    fs::create_dir_all(&root).expect("create root");
+    root
+}
+
 fn write_file(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).expect("create parent");
@@ -269,12 +280,27 @@ export const config = { port: @ };
 
 #[test]
 fn init_generates_tcon_presets() {
-    let root = mk_workspace("init_cmd");
+    let root = mk_plain_workspace("init_cmd");
     let out = run(&root, &["init"]);
     assert!(out.status.success(), "init failed: {:?}", out);
+    assert!(root.join(".tcon").is_dir());
     assert!(root.join(".tcon/sample_json.tcon").exists());
     assert!(root.join(".tcon/sample_yaml.tcon").exists());
     assert!(root.join(".tcon/sample_env.tcon").exists());
     assert!(root.join(".tcon/sample_toml.tcon").exists());
     assert!(root.join(".tcon/sample_properties.tcon").exists());
+}
+
+#[test]
+fn help_and_version_commands_work() {
+    let root = mk_plain_workspace("help_version");
+    let help = run(&root, &["--help"]);
+    assert!(help.status.success());
+    let help_text = String::from_utf8_lossy(&help.stderr);
+    assert!(help_text.contains("Usage:"));
+
+    let version = run(&root, &["--version"]);
+    assert!(version.status.success());
+    let version_text = String::from_utf8_lossy(&version.stdout);
+    assert!(version_text.contains("tcon "));
 }

@@ -1,0 +1,1 @@
+env output path must end with '.env'

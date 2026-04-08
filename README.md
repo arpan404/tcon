@@ -8,6 +8,21 @@ It compiles `.tcon` files (TypeScript-like DSL) into deterministic config output
 
 `tcon` is in a pre-v1 production-hardening phase. Breaking changes are still allowed while we lock the v1 DSL/runtime contract.
 
+## Install CLI
+
+Build and install locally:
+
+```bash
+./scripts/install.sh
+```
+
+Then run directly:
+
+```bash
+tcon --help
+tcon --version
+```
+
 ## Commands
 
 - `tcon build [--entry <file.tcon>]` - generate output files

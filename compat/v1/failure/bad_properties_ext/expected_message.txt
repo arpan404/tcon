@@ -1,0 +1,1 @@
+properties output path must end with '.properties'

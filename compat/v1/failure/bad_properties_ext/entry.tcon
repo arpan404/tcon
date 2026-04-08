@@ -1,0 +1,3 @@
+export const spec = { path: "bad_props.txt", format: "properties" };
+export const schema = t.object({ k: t.string().default("v") }).strict();
+export const config = {};

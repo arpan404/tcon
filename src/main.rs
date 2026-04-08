@@ -41,6 +41,10 @@ fn usage() {
     eprintln!("  tcon [--error-format text|json] init [--preset <name>] [--force]");
 }
 
+fn print_version() {
+    println!("tcon {}", env!("CARGO_PKG_VERSION"));
+}
+
 fn parse_optional_entry(args: &[String]) -> Result<Option<&str>, String> {
     if args.is_empty() {
         return Ok(None);
@@ -623,7 +627,20 @@ fn main() {
         }
     };
 
-    let ws = match Workspace::discover(None) {
+    if cmd == "help" || cmd == "--help" || cmd == "-h" {
+        usage();
+        return;
+    }
+    if cmd == "version" || cmd == "--version" || cmd == "-V" {
+        print_version();
+        return;
+    }
+
+    let ws = match if cmd == "init" {
+        Workspace::discover_or_create(None)
+    } else {
+        Workspace::discover(None)
+    } {
         Ok(ws) => ws,
         Err(e) => {
             print_error(error_format, &e);

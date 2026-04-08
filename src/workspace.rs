@@ -29,6 +29,22 @@ impl Workspace {
         Ok(Self { root, tcon_dir })
     }
 
+    pub fn discover_or_create(root: Option<&str>) -> Result<Self, String> {
+        let root = match root {
+            Some(r) => PathBuf::from(r),
+            None => std::env::current_dir().map_err(|e| format!("failed reading cwd: {e}"))?,
+        };
+        let tcon_dir = root.join(".tcon");
+        if !tcon_dir.exists() {
+            std::fs::create_dir_all(&tcon_dir)
+                .map_err(|e| format!("failed creating {}: {e}", tcon_dir.display()))?;
+        }
+        if !tcon_dir.is_dir() {
+            return Err(format!("Expected directory at {}", tcon_dir.display()));
+        }
+        Ok(Self { root, tcon_dir })
+    }
+
     /// Find all the entry files under `.tcon/` with the `.tcon` extension
     pub fn find_tcon_entries(&self) -> Result<Vec<PathBuf>, String> {
         let mut out = Vec::new();

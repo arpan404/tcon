@@ -30,7 +30,9 @@ fn write_table(
         } else {
             format!("{prefix}.{k}")
         };
-        out.push('\n');
+        if !out.is_empty() {
+            out.push('\n');
+        }
         out.push_str(&format!("[{name}]\n"));
         write_table(child, out, &name)?;
     }

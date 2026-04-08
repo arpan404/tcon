@@ -113,8 +113,10 @@ flowchart TD
 ## Quality Gates
 
 - Diagnostics identify file and failing path/stage.
+- JSON diagnostics codes follow `docs/diagnostics/v1.md` contract.
 - JSON emitter output is stable across runs and OSes.
 - `check` behavior is regression tested against expected drift cases.
+- Compatibility fixtures under `compat/v1/` are treated as frozen behavior snapshots.
 - Any new DSL feature must document:
   - syntax accepted
   - evaluator semantics

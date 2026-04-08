@@ -3,21 +3,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-struct SuccessCase {
-    name: &'static str,
-    entry: &'static str,
-    source: &'static str,
-    output: &'static str,
-    expected: &'static str,
-}
-
-struct FailureCase {
-    name: &'static str,
-    entry: &'static str,
-    source: &'static str,
-    expected_error: &'static str,
-}
-
 fn mk_workspace(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -46,140 +31,86 @@ fn run(root: &Path, args: &[&str]) -> std::process::Output {
 
 #[test]
 fn compatibility_matrix_success_cases() {
-    let cases = [
-        SuccessCase {
-            name: "json_defaults",
-            entry: "json_case.tcon",
-            source: r#"
-export const spec = { path: "json_case.json", format: "json" };
-export const schema = t.object({
-  host: t.string().default("0.0.0.0"),
-  port: t.number().int().default(8080),
-}).strict();
-export const config = { port: 3000 };
-"#,
-            output: "json_case.json",
-            expected: "{\n  \"host\": \"0.0.0.0\",\n  \"port\": 3000\n}\n",
-        },
-        SuccessCase {
-            name: "yaml_format",
-            entry: "yaml_case.tcon",
-            source: r#"
-export const spec = { path: "yaml_case.yaml", format: "yaml" };
-export const schema = t.object({ port: t.number().default(8080) }).strict();
-export const config = { port: 3000 };
-"#,
-            output: "yaml_case.yaml",
-            expected: "port: 3000\n",
-        },
-        SuccessCase {
-            name: "env_format",
-            entry: "env_case.tcon",
-            source: r#"
-export const spec = { path: "env_case.env", format: "env" };
-export const schema = t.object({
-  host: t.string().default("0.0.0.0"),
-  port: t.number().default(8080),
-}).strict();
-export const config = { port: 3000 };
-"#,
-            output: "env_case.env",
-            expected: "HOST=0.0.0.0\nPORT=3000\n",
-        },
-        SuccessCase {
-            name: "toml_format",
-            entry: "toml_case.tcon",
-            source: r#"
-export const spec = { path: "toml_case.toml", format: "toml" };
-export const schema = t.object({
-  app: t.object({
-    host: t.string().default("0.0.0.0"),
-    port: t.number().default(8080),
-  }).strict(),
-}).strict();
-export const config = { app: { port: 3000 } };
-"#,
-            output: "toml_case.toml",
-            expected: "\n[app]\nhost = \"0.0.0.0\"\nport = 3000\n",
-        },
-        SuccessCase {
-            name: "properties_format",
-            entry: "properties_case.tcon",
-            source: r#"
-export const spec = { path: "properties_case.properties", format: "properties" };
-export const schema = t.object({
-  app: t.object({
-    host: t.string().default("0.0.0.0"),
-    port: t.number().default(8080),
-  }).strict(),
-}).strict();
-export const config = { app: { port: 3000 } };
-"#,
-            output: "properties_case.properties",
-            expected: "app.host=0.0.0.0\napp.port=3000\n",
-        },
-    ];
+    let snapshot = Path::new(env!("CARGO_MANIFEST_DIR")).join("compat/v1/success");
+    for case in fs::read_dir(&snapshot).expect("list success cases") {
+        let case = case.expect("dir entry");
+        let case_path = case.path();
+        if !case_path.is_dir() {
+            continue;
+        }
+        let name = case_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let root = mk_workspace(name);
+        let entry_src =
+            fs::read_to_string(case_path.join("entry.tcon")).expect("read entry fixture");
+        write_file(&root.join(".tcon/entry.tcon"), &entry_src);
 
-    for case in cases {
-        let root = mk_workspace(case.name);
-        write_file(&root.join(".tcon").join(case.entry), case.source);
-        let out = run(&root, &["build", "--entry", case.entry]);
-        assert!(out.status.success(), "case {} failed: {:?}", case.name, out);
-        let actual = fs::read_to_string(root.join(case.output)).expect("read output");
-        assert_eq!(actual, case.expected, "case {}", case.name);
+        let out = run(&root, &["build", "--entry", "entry.tcon"]);
+        assert!(out.status.success(), "case {} failed: {:?}", name, out);
+
+        let expected_path = fs::read_to_string(case_path.join("expected_path.txt"))
+            .expect("read expected path")
+            .trim()
+            .to_string();
+        let expected_output = fs::read_to_string(case_path.join("expected_output.txt"))
+            .expect("read expected output");
+        let actual = fs::read_to_string(root.join(expected_path)).expect("read generated output");
+        assert_eq!(
+            actual.trim_end(),
+            expected_output.trim_end(),
+            "case {}",
+            name
+        );
     }
 }
 
 #[test]
 fn compatibility_matrix_failure_cases() {
-    let cases = [
-        FailureCase {
-            name: "enum_invalid",
-            entry: "enum_invalid.tcon",
-            source: r#"
-export const spec = { path: "enum_invalid.json", format: "json" };
-export const schema = t.object({ mode: t.enum(["dev", "prod"]) }).strict();
-export const config = { mode: "staging" };
-"#,
-            expected_error: "enum value not in allowed variants",
-        },
-        FailureCase {
-            name: "bad_env_extension",
-            entry: "bad_env_ext.tcon",
-            source: r#"
-export const spec = { path: "bad_env.txt", format: "env" };
-export const schema = t.object({ k: t.string().default("v") }).strict();
-export const config = {};
-"#,
-            expected_error: "env output path must end with '.env'",
-        },
-        FailureCase {
-            name: "bad_properties_extension",
-            entry: "bad_props_ext.tcon",
-            source: r#"
-export const spec = { path: "bad_props.txt", format: "properties" };
-export const schema = t.object({ k: t.string().default("v") }).strict();
-export const config = {};
-"#,
-            expected_error: "properties output path must end with '.properties'",
-        },
-    ];
+    let snapshot = Path::new(env!("CARGO_MANIFEST_DIR")).join("compat/v1/failure");
+    for case in fs::read_dir(&snapshot).expect("list failure cases") {
+        let case = case.expect("dir entry");
+        let case_path = case.path();
+        if !case_path.is_dir() {
+            continue;
+        }
+        let name = case_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let root = mk_workspace(name);
+        let entry_src =
+            fs::read_to_string(case_path.join("entry.tcon")).expect("read entry fixture");
+        write_file(&root.join(".tcon/entry.tcon"), &entry_src);
 
-    for case in cases {
-        let root = mk_workspace(case.name);
-        write_file(&root.join(".tcon").join(case.entry), case.source);
-        let out = run(&root, &["build", "--entry", case.entry]);
-        assert!(
-            !out.status.success(),
-            "case {} unexpectedly passed",
-            case.name
+        let expected_code = fs::read_to_string(case_path.join("expected_code.txt"))
+            .expect("read expected code")
+            .trim()
+            .to_string();
+        let expected_message = fs::read_to_string(case_path.join("expected_message.txt"))
+            .expect("read expected message")
+            .trim()
+            .to_string();
+
+        let out = run(
+            &root,
+            &["--error-format", "json", "build", "--entry", "entry.tcon"],
         );
+        assert!(!out.status.success(), "case {} unexpectedly passed", name);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains(case.expected_error),
-            "case {} missing error '{}': {}",
-            case.name,
-            case.expected_error,
+            stderr.contains(&format!("\"code\":\"{}\"", expected_code)),
+            "case {} missing code '{}': {}",
+            name,
+            expected_code,
+            stderr
+        );
+        assert!(
+            stderr.contains(&expected_message),
+            "case {} missing message '{}': {}",
+            name,
+            expected_message,
             stderr
         );
     }
