@@ -16,6 +16,10 @@ It compiles `.tcon` files (TypeScript-like DSL) into deterministic config output
 - `tcon print --entry <file.tcon>` - print parsed AST/program
 - `tcon watch [--entry <file.tcon>]` - rebuild when entry files change
 
+Global flags:
+
+- `--error-format text|json` - emit human-readable or machine-readable errors
+
 ## Supported output formats
 
 - `json`

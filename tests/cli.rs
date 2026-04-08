@@ -242,3 +242,24 @@ export const config = { level: true };
         "{stderr}"
     );
 }
+
+#[test]
+fn error_format_json_outputs_machine_readable_error() {
+    let root = mk_workspace("json_error");
+    write_file(
+        &root.join(".tcon/bad.tcon"),
+        r#"
+export const spec = { path: "x.json", format: "json" };
+export const schema = t.object({ port: t.number().default(1) }).strict();
+export const config = { port: @ };
+"#,
+    );
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "bad.tcon"],
+    );
+    assert!(!out.status.success(), "build should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("{\"error\":\""), "{stderr}");
+    assert!(stderr.contains("\\n"), "{stderr}");
+}

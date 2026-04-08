@@ -22,14 +22,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ErrorFormat {
+    Text,
+    Json,
+}
+
 fn usage() {
     eprintln!("tcon - typed configuration compiler");
     eprintln!("Usage:");
-    eprintln!("  tcon build [--entry <file.tcon>]");
-    eprintln!("  tcon check [--entry <file.tcon>]");
-    eprintln!("  tcon diff [--entry <file.tcon>]");
-    eprintln!("  tcon print --entry <file.tcon>");
-    eprintln!("  tcon watch [--entry <file.tcon>]");
+    eprintln!("  tcon [--error-format text|json] build [--entry <file.tcon>]");
+    eprintln!("  tcon [--error-format text|json] check [--entry <file.tcon>]");
+    eprintln!("  tcon [--error-format text|json] diff [--entry <file.tcon>]");
+    eprintln!("  tcon [--error-format text|json] print --entry <file.tcon>");
+    eprintln!("  tcon [--error-format text|json] watch [--entry <file.tcon>]");
 }
 
 fn parse_optional_entry(args: &[String]) -> Result<Option<&str>, String> {
@@ -282,18 +288,76 @@ fn changed_files(
     out
 }
 
-fn main() {
-    let mut args = env::args().skip(1);
-    let Some(cmd) = args.next() else {
-        usage();
-        std::process::exit(2);
+fn parse_global_args(args: &[String]) -> Result<(ErrorFormat, String, Vec<String>), String> {
+    let mut format = ErrorFormat::Text;
+    let mut positional = Vec::new();
+    let mut i = 0usize;
+    while i < args.len() {
+        if args[i] == "--error-format" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| "missing value for --error-format".to_string())?;
+            format = match value.as_str() {
+                "text" => ErrorFormat::Text,
+                "json" => ErrorFormat::Json,
+                _ => {
+                    return Err(format!(
+                        "unsupported --error-format '{}' (expected text|json)",
+                        value
+                    ));
+                }
+            };
+            i += 2;
+            continue;
+        }
+        positional.push(args[i].clone());
+        i += 1;
+    }
+
+    let Some(cmd) = positional.first() else {
+        return Err("missing command".to_string());
     };
-    let rest: Vec<String> = args.collect();
+    Ok((format, cmd.clone(), positional[1..].to_vec()))
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn print_error(format: ErrorFormat, message: &str) {
+    match format {
+        ErrorFormat::Text => eprintln!("error: {message}"),
+        ErrorFormat::Json => eprintln!("{{\"error\":\"{}\"}}", json_escape(message)),
+    }
+}
+
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let (error_format, cmd, rest) = match parse_global_args(&args) {
+        Ok(v) => v,
+        Err(e) => {
+            usage();
+            print_error(ErrorFormat::Text, &e);
+            std::process::exit(2);
+        }
+    };
 
     let ws = match Workspace::discover(None) {
         Ok(ws) => ws,
         Err(e) => {
-            eprintln!("error: {e}");
+            print_error(error_format, &e);
             std::process::exit(1);
         }
     };
@@ -311,7 +375,7 @@ fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("error: {e}");
+        print_error(error_format, &e);
         std::process::exit(1);
     }
 }

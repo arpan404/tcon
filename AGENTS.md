@@ -87,6 +87,8 @@ flowchart TD
   - Prints parsed export expressions for debugging parser output.
 - `tcon watch [--entry <file.tcon>]`
   - Runs an initial build, then rebuilds when entry or transitive imported `.tcon` files change.
+- Global: `--error-format text|json`
+  - Controls stderr output format for automation/tooling integration.
 
 ## Implemented Scope
 
