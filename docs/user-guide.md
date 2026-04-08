@@ -33,6 +33,8 @@ export const schema = t.object({
 export const config = { port: 3000 };
 ```
 
+`.strict()` objects reject any `config` keys that are not declared on the schema. Every `.default(...)` is checked against its field’s type before `config` is validated (`spec` only allows `path`, `format`, and `mode`).
+
 ## More docs
 
 - CLI reference: `docs/cli-reference.md`

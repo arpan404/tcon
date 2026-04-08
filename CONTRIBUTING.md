@@ -14,6 +14,9 @@ Every change should pass:
 
 ## Change Guidelines
 
+- **`.strict()`** objects fail the build if `config` contains keys not listed on that object (Zod-style), rather than dropping them.
+- **`.default(...)`** values on the schema tree are validated (type, min/max, strict keys, etc.) before `config` is processed.
+- **`spec`** objects must not contain keys other than `path`, `format`, and `mode`.
 - Keep deterministic output guarantees intact.
 - Avoid external dependencies unless explicitly approved.
 - Add tests for any new DSL surface or validation behavior.

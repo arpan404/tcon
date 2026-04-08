@@ -168,7 +168,36 @@ pub fn lex(src: &str, file_name: &str) -> Result<Vec<Token>, String> {
                 }
                 TokenKind::String(out)
             }
-            '-' | '0'..='9' => {
+            '-' => {
+                if i + 1 >= bytes.len() {
+                    return Err(format_source_error(
+                        file_name,
+                        src,
+                        i,
+                        "unexpected character '-' (negative numbers must include digits, e.g. -1)",
+                    ));
+                }
+                let next = bytes[i + 1] as char;
+                if !next.is_ascii_digit() {
+                    return Err(format_source_error(
+                        file_name,
+                        src,
+                        i,
+                        "unexpected character '-' (negative numbers must include digits, e.g. -1)",
+                    ));
+                }
+                i += 1;
+                while i < bytes.len() {
+                    let ch = bytes[i] as char;
+                    if ch.is_ascii_digit() || ch == '.' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                TokenKind::Number(src[start..i].to_string())
+            }
+            '0'..='9' => {
                 i += 1;
                 while i < bytes.len() {
                     let ch = bytes[i] as char;

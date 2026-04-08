@@ -65,7 +65,7 @@ flowchart TD
 - `eval/spec_eval`: export `spec` -> `Spec { path, format, mode }`
 - `eval/schema_eval`: schema DSL -> `Schema`
 - `eval/config_eval`: config literals -> `Value`
-- `validate/validator`: `Schema + Value` -> normalized `Value` (defaults, strict handling, type checks)
+- `validate/validator`: `Schema + Value` -> normalized `Value` (defaults, strict unknown-key errors, type checks); validates `.default()` values on the schema tree before `config` is checked
 - `emit/json`: normalized `Value` -> deterministic JSON string
 - `diff`: expected-vs-actual drift messaging
 

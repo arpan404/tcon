@@ -15,7 +15,9 @@ pub fn evaluate_spec_expr(expr: &Expr, file_name: &str) -> Result<Spec, String> 
             "path" => path = Some(expect_string(value, file_name, "spec.path")?),
             "format" => format = Some(expect_string(value, file_name, "spec.format")?),
             "mode" => mode = Some(expect_string(value, file_name, "spec.mode")?),
-            _ => {}
+            _ => {
+                return Err(format!("{file_name}: unknown key in spec object: {key}"));
+            }
         }
     }
 

@@ -22,6 +22,8 @@ export const spec = {
 - `format`: `json | yaml | env | toml | properties`
 - `mode`: currently `replace`
 
+Only these keys are allowed; extra keys are rejected.
+
 ## `schema` roots
 
 - `t.string()`
@@ -41,7 +43,7 @@ export const spec = {
 - `.min(n)`
 - `.max(n)`
 - `.int()`
-- `.strict()` — unknown keys in `config` for that object are **not** copied into the compiled output (they are ignored). Validation does not fail solely because of extra keys; use review/drift checks if you need to catch them.
+- `.strict()` — like Zod’s `strict()`, unknown keys in `config` for that object are a **validation error** (the build fails with a list of keys).
 
 ## Imports
 

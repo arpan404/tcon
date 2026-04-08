@@ -16,7 +16,7 @@ use crate::eval::{evaluate_config, evaluate_schema, evaluate_spec};
 use crate::tcon::loader::{
     LoadCache, collect_dependency_files, load_program_cached, load_unresolved_program,
 };
-use crate::validate::validator::validate;
+use crate::validate::validator::{validate, validate_schema_defaults};
 use crate::workspace::Workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -113,6 +113,7 @@ fn compile_entry(
         ));
     }
     let schema = evaluate_schema(&exports, &file_name)?;
+    validate_schema_defaults(&schema, &file_name)?;
     let cfg = evaluate_config(&exports, &file_name)?;
     let normalized = validate(&schema, &cfg, &file_name)?;
     let output_path = ws.root.join(&spec.path);
@@ -381,6 +382,12 @@ fn classify_error_code(message: &str) -> &'static str {
     }
     if message.contains("enum value not in allowed variants") {
         return "E_VALIDATE_ENUM";
+    }
+    if message.contains("unknown key(s) in strict object") {
+        return "E_VALIDATE_STRICT_UNKNOWN_KEY";
+    }
+    if message.contains("unknown key in spec object") {
+        return "E_SPEC_UNKNOWN_KEY";
     }
     if message.contains("unsupported spec.format") {
         return "E_SPEC_FORMAT";

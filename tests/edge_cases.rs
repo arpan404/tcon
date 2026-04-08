@@ -448,7 +448,7 @@ export const config = foo();
 // --- Validation ---
 
 #[test]
-fn strict_object_drops_unknown_keys_from_output() {
+fn strict_object_rejects_unknown_keys() {
     let root = mk_workspace("strict_strip");
     write_file(
         &root.join(".tcon/x.tcon"),
@@ -460,12 +460,16 @@ export const schema = t.object({
 export const config = { keep: 2, extra: "gone" };
 "#,
     );
-    assert!(run(&root, &["build"]).status.success());
-    let json = fs::read_to_string(root.join("out.json")).expect("read");
-    assert!(json.contains("\"keep\""));
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_VALIDATE_STRICT_UNKNOWN_KEY");
     assert!(
-        !json.contains("extra"),
-        "strict mode should omit unknown keys, got: {json}"
+        stderr.contains("unknown key(s) in strict object"),
+        "{stderr}"
     );
 }
 
@@ -1078,6 +1082,87 @@ export const config = { items: [null] };
     assert!(
         stderr.contains("properties emitter cannot represent null"),
         "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn schema_default_must_match_field_type() {
+    let root = mk_workspace("bad_default");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  n: t.number().default("not-a-number"),
+}).strict();
+export const config = { n: 1 };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("expected number") && stderr.contains("<schema.default>"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn spec_rejects_unknown_keys() {
+    let root = mk_workspace("spec_unknown");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json", typoKey: "oops" };
+export const schema = t.object({}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_SPEC_UNKNOWN_KEY");
+    assert!(stderr.contains("unknown key in spec object"), "{stderr}");
+}
+
+#[test]
+fn negative_numeric_literals_in_config() {
+    let root = mk_workspace("neg_num");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  offset: t.number().default(-1),
+}).strict();
+export const config = { offset: -42 };
+"#,
+    );
+    assert!(run(&root, &["build"]).status.success());
+    let json = fs::read_to_string(root.join("out.json")).expect("read");
+    assert!(json.contains("-42"));
+}
+
+#[test]
+fn lone_minus_is_lex_error() {
+    let root = mk_workspace("lone_minus");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({}).strict();
+export const config = { a: - };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unexpected character '-'") || stderr.contains("unexpected token"),
+        "{stderr}"
     );
 }
 

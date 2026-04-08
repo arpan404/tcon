@@ -5,6 +5,49 @@ pub fn validate(schema: &Schema, value: &Value, file_name: &str) -> Result<Value
     validate_inner(schema, Some(value), "config", file_name)
 }
 
+/// Ensure every `.default(...)` on the schema tree satisfies that node’s own rules (strict object keys, min/max, etc.).
+pub fn validate_schema_defaults(schema: &Schema, file_name: &str) -> Result<(), String> {
+    defaults_walk(schema, file_name, "<schema.default>")
+}
+
+fn schema_default(schema: &Schema) -> Option<&Value> {
+    match schema {
+        Schema::String { default, .. }
+        | Schema::Number { default, .. }
+        | Schema::Boolean { default, .. }
+        | Schema::Object { default, .. }
+        | Schema::Array { default, .. }
+        | Schema::Record { default, .. }
+        | Schema::Literal { default, .. }
+        | Schema::Enum { default, .. }
+        | Schema::Union { default, .. } => default.as_ref(),
+    }
+}
+
+fn defaults_walk(schema: &Schema, file_name: &str, path: &str) -> Result<(), String> {
+    if let Some(d) = schema_default(schema) {
+        validate_inner(schema, Some(d), path, file_name).map(|_| ())?;
+    }
+    match schema {
+        Schema::Object { fields, .. } => {
+            for (name, fs) in fields {
+                defaults_walk(fs, file_name, &format!("{path}.{name}"))?;
+            }
+        }
+        Schema::Array { item, .. } => defaults_walk(item, file_name, &format!("{path}[]"))?,
+        Schema::Record { value, .. } => {
+            defaults_walk(value, file_name, &format!("{path}.<record>"))?;
+        }
+        Schema::Union { variants, .. } => {
+            for (i, v) in variants.iter().enumerate() {
+                defaults_walk(v, file_name, &format!("{path}|variant{i}"))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn validate_inner(
     schema: &Schema,
     provided: Option<&Value>,
@@ -152,6 +195,22 @@ fn validate_inner(
                 return err(file_name, path, "expected object");
             };
 
+            if *strict {
+                let mut unknown: Vec<String> = obj
+                    .keys()
+                    .filter(|k| !fields.contains_key(k.as_str()))
+                    .cloned()
+                    .collect();
+                if !unknown.is_empty() {
+                    unknown.sort();
+                    return err(
+                        file_name,
+                        path,
+                        &format!("unknown key(s) in strict object: {}", unknown.join(", ")),
+                    );
+                }
+            }
+
             let mut out = BTreeMap::new();
             for (name, field_schema) in fields {
                 let in_value = obj.get(name);
@@ -221,15 +280,17 @@ fn validate_inner(
             let Some(value) = value else {
                 return Ok(Value::Null);
             };
-            let mut last_error = None;
-            for variant in variants {
+            let mut errors = Vec::new();
+            for (i, variant) in variants.iter().enumerate() {
                 match validate_inner(variant, Some(value), path, file_name) {
                     Ok(v) => return Ok(v),
-                    Err(e) => last_error = Some(e),
+                    Err(e) => errors.push(format!("variant {i}: {e}")),
                 }
             }
-            Err(last_error
-                .unwrap_or_else(|| format!("{file_name}: {path}: union did not match any variant")))
+            Err(format!(
+                "{file_name}: {path}: value did not match any union variant ({})",
+                errors.join("; ")
+            ))
         }
     }
 }
