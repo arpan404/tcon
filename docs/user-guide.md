@@ -11,8 +11,8 @@
    - Windows PowerShell: `./scripts/install.ps1`
 2. Initialize starter templates:
    - `tcon init`
-3. Validate without writing files (optional, good for CI):
-   - `tcon validate`
+3. Validate `.tcon` sources only (does not read generated files on disk):
+   - `tcon validate` — use `tcon check` to catch stale or hand-edited outputs
 4. Build generated configs:
    - `tcon build` (or `tcon generate`)
 5. Verify drift in CI/local:

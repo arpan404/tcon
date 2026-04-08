@@ -60,6 +60,11 @@ export const config = { port: 3000 };
     }
     let v = run(&root, &["validate"]);
     assert!(v.status.success(), "validate failed: {:?}", v);
+    let v_out = String::from_utf8_lossy(&v.stdout);
+    assert!(
+        v_out.contains("would write") && v_out.contains("tcon check"),
+        "validate should explain it does not touch disk:\n{v_out}"
+    );
     assert!(
         !artifact.exists(),
         "validate must not write spec.path output"
@@ -367,6 +372,47 @@ fn init_generates_tcon_presets() {
     assert!(root.join(".tcon/sample_env.tcon").exists());
     assert!(root.join(".tcon/sample_toml.tcon").exists());
     assert!(root.join(".tcon/sample_properties.tcon").exists());
+}
+
+#[test]
+fn validate_passes_when_committed_output_is_wrong_but_check_fails() {
+    let root = mk_workspace("stale_artifact");
+    write_file(
+        &root.join(".tcon/app.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ a: t.string().default("good") }).strict();
+export const config = {};
+"#,
+    );
+    write_file(&root.join("out.json"), "{\n  \"a\": 999\n}\n");
+    assert!(
+        run(&root, &["validate"]).status.success(),
+        "validate only reads .tcon; bad on-disk JSON is ignored"
+    );
+    let chk = run(&root, &["check"]);
+    assert!(
+        !chk.status.success(),
+        "check must compare compile result to disk"
+    );
+    let chk_out = String::from_utf8_lossy(&chk.stdout);
+    assert!(
+        chk_out.contains("drift") || chk_out.contains("out.json"),
+        "{chk_out}"
+    );
+}
+
+#[test]
+fn unknown_command_typo_suggests_check() {
+    let root = mk_plain_workspace("typo_cmd");
+    fs::create_dir_all(root.join(".tcon")).unwrap();
+    let out = run(&root, &["checl"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("did you mean") && stderr.contains("check"),
+        "{stderr}"
+    );
 }
 
 #[test]

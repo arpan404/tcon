@@ -36,6 +36,59 @@ struct Theme {
     accent: &'static str,
 }
 
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let n = a.len();
+    let m = b.len();
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
+    let mut row: Vec<usize> = (0..=m).collect();
+    for i in 1..=n {
+        let mut prev = row[0];
+        row[0] = i;
+        for j in 1..=m {
+            let tmp = row[j];
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            row[j] = (row[j] + 1).min(row[j - 1] + 1).min(prev + cost);
+            prev = tmp;
+        }
+    }
+    row[m]
+}
+
+/// If `input` is close to a known subcommand, return it (for "did you mean?" hints).
+fn suggest_similar_command(input: &str) -> Option<&'static str> {
+    const COMMANDS: &[&str] = &[
+        "validate", "build", "generate", "check", "diff", "print", "watch", "init",
+    ];
+    let threshold = match input.chars().count() {
+        0..3 => 0,
+        3..6 => 1,
+        _ => 2,
+    };
+    if threshold == 0 {
+        return None;
+    }
+    let mut best: Option<&'static str> = None;
+    let mut best_d = usize::MAX;
+    for c in COMMANDS {
+        let d = levenshtein(input, c);
+        if d == 0 {
+            return None;
+        }
+        if d <= threshold && d < best_d {
+            best_d = d;
+            best = Some(c);
+        }
+    }
+    best
+}
+
 impl Theme {
     fn for_stderr() -> Self {
         Self::new(io::stderr().is_terminal())
@@ -137,7 +190,7 @@ fn usage() {
     };
     cmd(
         "validate",
-        "Compile entries in memory only — no writes (great for CI).",
+        "Compile `.tcon` only; does not read or write `spec.path` files on disk.",
     );
     cmd(
         "build",
@@ -146,7 +199,7 @@ fn usage() {
     cmd("generate", "Alias of `build`.");
     cmd(
         "check",
-        "Recompile and fail if on-disk files differ from the result.",
+        "Recompile and fail if on-disk outputs differ (drift / stale artifacts).",
     );
     cmd("diff", "Show unified-style hunks for files that differ.");
     cmd(
@@ -193,7 +246,7 @@ fn usage() {
     );
     eprintln!();
     eprintln!(
-        "{dim}More: docs/cli-reference.md · Disable ANSI: NO_COLOR=1{sreset}",
+        "{dim}validate = sources only · check = sources vs on-disk outputs · docs/cli-reference.md · NO_COLOR=1{sreset}",
         dim = s.dim,
         sreset = s.reset
     );
@@ -340,11 +393,17 @@ fn run_validate(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
     let mut cache = LoadCache::default();
     for entry_file in entries {
         let (output, _) = compile_entry(ws, &entry_file, &mut cache)?;
-        println!(
-            "valid {}",
-            output.strip_prefix(&ws.root).unwrap_or(&output).display()
-        );
+        let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
+        let entry_rel = entry_file
+            .strip_prefix(&ws.tcon_dir)
+            .unwrap_or(&entry_file)
+            .display();
+        println!("ok  {entry_rel} → would write {rel} (not written)");
     }
+    println!();
+    println!(
+        "`validate` only checks `.tcon` sources. Run `tcon check` to compare those results to files on disk, or `tcon build` to update them."
+    );
     Ok(())
 }
 
@@ -904,12 +963,34 @@ fn main() {
         "init" => run_init(&ws, &rest),
         _ => {
             usage();
-            Err(format!("unknown command: {cmd}"))
+            let mut msg = format!("unknown command: {cmd}");
+            if let Some(s) = suggest_similar_command(cmd.as_str()) {
+                msg.push_str(&format!(" (did you mean `{s}`?)"));
+            }
+            Err(msg)
         }
     };
 
     if let Err(e) = result {
         print_error(error_format, &e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod command_hint_tests {
+    use super::{levenshtein, suggest_similar_command};
+
+    #[test]
+    fn levenshtein_examples() {
+        assert_eq!(levenshtein("checl", "check"), 1);
+        assert_eq!(levenshtein("check", "check"), 0);
+    }
+
+    #[test]
+    fn suggest_typo() {
+        assert_eq!(suggest_similar_command("checl"), Some("check"));
+        assert_eq!(suggest_similar_command("valiate"), Some("validate"));
+        assert_eq!(suggest_similar_command("xyzunknown"), None);
     }
 }
