@@ -14,5 +14,4 @@ export const schema = t
 
 export const config = {
   port: 3000,
-  ignored: true,
 };
