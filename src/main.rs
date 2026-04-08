@@ -11,13 +11,14 @@ use crate::emit::env::to_env;
 use crate::emit::json::to_pretty_json;
 use crate::emit::yaml::to_yaml;
 use crate::eval::{evaluate_config, evaluate_schema, evaluate_spec};
-use crate::tcon::loader::{load_program, load_unresolved_program};
+use crate::tcon::loader::{collect_dependency_files, load_program, load_unresolved_program};
 use crate::validate::validator::validate;
 use crate::workspace::Workspace;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 fn usage() {
     eprintln!("tcon - typed configuration compiler");
@@ -188,25 +189,90 @@ fn run_watch(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
     run_build(ws, entry)?;
     println!("watching .tcon files for changes...");
 
-    let mut stamps = read_stamps(&entries);
+    let mut watched = resolve_watch_files(&entries)?;
+    let mut stamps = read_stamps(&watched);
     loop {
         std::thread::sleep(Duration::from_millis(800));
-        let next = read_stamps(&entries);
-        if next != stamps {
-            stamps = next;
+        watched = resolve_watch_files(&entries)?;
+        let next = read_stamps(&watched);
+        let mut changed = changed_files(&stamps, &next);
+        if !changed.is_empty() {
+            // Debounce bursts of edits into one rebuild cycle.
+            let debounce_until = Instant::now() + Duration::from_millis(450);
+            while Instant::now() < debounce_until {
+                std::thread::sleep(Duration::from_millis(120));
+                watched = resolve_watch_files(&entries)?;
+                let later = read_stamps(&watched);
+                for p in changed_files(&next, &later) {
+                    changed.push(p);
+                }
+            }
+
+            let mut uniq = BTreeSet::new();
+            for p in changed {
+                uniq.insert(p);
+            }
+            let list: Vec<String> = uniq
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(&ws.root)
+                        .unwrap_or(p)
+                        .display()
+                        .to_string()
+                })
+                .collect();
+
             println!("change detected, rebuilding...");
+            println!("changed files: {}", list.join(", "));
             if let Err(e) = run_build(ws, entry) {
                 eprintln!("error: {e}");
             }
+            watched = resolve_watch_files(&entries)?;
+            stamps = read_stamps(&watched);
+        } else {
+            stamps = next;
         }
     }
 }
 
-fn read_stamps(entries: &[PathBuf]) -> Vec<Option<SystemTime>> {
-    entries
-        .iter()
-        .map(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
-        .collect()
+fn resolve_watch_files(entries: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut merged = std::collections::BTreeSet::new();
+    for entry in entries {
+        for dep in collect_dependency_files(entry)? {
+            merged.insert(dep);
+        }
+    }
+    Ok(merged.into_iter().collect())
+}
+
+fn read_stamps(files: &[PathBuf]) -> BTreeMap<PathBuf, Option<SystemTime>> {
+    let mut map = BTreeMap::new();
+    for p in files {
+        map.insert(p.clone(), fs::metadata(p).and_then(|m| m.modified()).ok());
+    }
+    map
+}
+
+fn changed_files(
+    before: &BTreeMap<PathBuf, Option<SystemTime>>,
+    after: &BTreeMap<PathBuf, Option<SystemTime>>,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut keys = BTreeSet::new();
+    for k in before.keys() {
+        keys.insert(k.clone());
+    }
+    for k in after.keys() {
+        keys.insert(k.clone());
+    }
+    for k in keys {
+        let b = before.get(&k).copied().flatten();
+        let a = after.get(&k).copied().flatten();
+        if b != a {
+            out.push(k);
+        }
+    }
+    out
 }
 
 fn main() {

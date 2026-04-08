@@ -1,11 +1,13 @@
 use crate::model::{ExportConst, Expr, ImportStmt, Key, Program, Span};
+use crate::tcon::diagnostic::format_source_error;
 use crate::tcon::lexer::{Token, TokenKind};
 
-pub fn parse(tokens: &[Token], file_name: &str) -> Result<Program, String> {
+pub fn parse(tokens: &[Token], file_name: &str, src: &str) -> Result<Program, String> {
     let mut p = Parser {
         tokens,
         i: 0,
         file_name,
+        src,
     };
     p.parse_program()
 }
@@ -14,6 +16,7 @@ struct Parser<'a> {
     tokens: &'a [Token],
     i: usize,
     file_name: &'a str,
+    src: &'a str,
 }
 
 impl<'a> Parser<'a> {
@@ -221,11 +224,16 @@ impl<'a> Parser<'a> {
     }
 
     fn err(&self, msg: &str) -> String {
-        format!("{}: {}", self.file_name, msg)
+        format_source_error(
+            self.file_name,
+            self.src,
+            self.src.len().saturating_sub(1),
+            msg,
+        )
     }
 
     fn err_at(&self, pos: usize, msg: &str) -> String {
-        format!("{}: {} at byte {}", self.file_name, msg, pos)
+        format_source_error(self.file_name, self.src, pos, msg)
     }
 }
 

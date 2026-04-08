@@ -1,4 +1,5 @@
 use crate::model::Span;
+use crate::tcon::diagnostic::format_source_error;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
@@ -121,7 +122,12 @@ pub fn lex(src: &str, file_name: &str) -> Result<Vec<Token>, String> {
                     if ch == '\\' {
                         i += 1;
                         if i >= bytes.len() {
-                            return Err(format!("{file_name}: unterminated string literal"));
+                            return Err(format_source_error(
+                                file_name,
+                                src,
+                                start,
+                                "unterminated string literal",
+                            ));
                         }
                         let esc = bytes[i] as char;
                         let mapped = match esc {
@@ -177,7 +183,12 @@ pub fn lex(src: &str, file_name: &str) -> Result<Vec<Token>, String> {
                         _ => TokenKind::Ident(text.to_string()),
                     }
                 } else {
-                    return Err(format!("{file_name}: unexpected character '{c}' at byte {i}"));
+                    return Err(format_source_error(
+                        file_name,
+                        src,
+                        i,
+                        &format!("unexpected character '{c}'"),
+                    ));
                 }
             }
         };

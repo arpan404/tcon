@@ -76,7 +76,8 @@ export const config = { port: 1 };
     let out = run(&root, &["diff"]);
     assert!(!out.status.success(), "diff should exit non-zero");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("first difference"), "{stdout}");
+    assert!(stdout.contains("--- actual"), "{stdout}");
+    assert!(stdout.contains("+++ expected"), "{stdout}");
 }
 
 #[test]
@@ -139,4 +140,23 @@ export const config = sharedConfig;
     assert!(out.status.success(), "import build failed: {:?}", out);
     let json = fs::read_to_string(root.join("server.json")).expect("read json");
     assert!(json.contains("\"port\": 3000"));
+}
+
+#[test]
+fn diagnostics_include_line_column_snippet() {
+    let root = mk_workspace("diag");
+    write_file(
+        &root.join(".tcon/bad.tcon"),
+        r#"
+export const spec = { path: "x.json", format: "json" };
+export const schema = t.object({ port: t.number().default(1) }).strict();
+export const config = { port: @ };
+"#,
+    );
+
+    let out = run(&root, &["build", "--entry", "bad.tcon"]);
+    assert!(!out.status.success(), "build should fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("-->"), "{stderr}");
+    assert!(stderr.contains("^"), "{stderr}");
 }

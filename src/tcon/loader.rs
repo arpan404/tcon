@@ -32,7 +32,7 @@ fn load_program_inner(
     let src = fs::read_to_string(&canonical)
         .map_err(|e| format!("{}: failed to read: {}", file_name, e))?;
     let tokens = lex(&src, &file_name)?;
-    let program = parse(&tokens, &file_name)?;
+    let program = parse(&tokens, &file_name, &src)?;
     let exports = exports_map(program, &canonical, stack, cache)?;
     stack.remove(&canonical);
     cache.insert(canonical, exports.clone());
@@ -81,5 +81,97 @@ pub fn load_unresolved_program(path: &PathBuf) -> Result<Program, String> {
     let file_name = path.display().to_string();
     let src = fs::read_to_string(path).map_err(|e| format!("{}: failed to read: {}", file_name, e))?;
     let tokens = lex(&src, &file_name)?;
-    parse(&tokens, &file_name)
+    parse(&tokens, &file_name, &src)
+}
+
+pub fn collect_dependency_files(entry: &PathBuf) -> Result<Vec<PathBuf>, String> {
+    let mut visiting = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    dependency_dfs(entry.as_path(), &mut visiting, &mut seen)?;
+    Ok(seen.into_iter().collect())
+}
+
+fn dependency_dfs(
+    path: &Path,
+    visiting: &mut BTreeSet<PathBuf>,
+    seen: &mut BTreeSet<PathBuf>,
+) -> Result<(), String> {
+    let canonical = fs::canonicalize(path)
+        .map_err(|e| format!("{}: failed to resolve path: {}", path.display(), e))?;
+    if seen.contains(&canonical) {
+        return Ok(());
+    }
+    if visiting.contains(&canonical) {
+        return Err(format!("circular import detected at {}", canonical.display()));
+    }
+    visiting.insert(canonical.clone());
+    seen.insert(canonical.clone());
+
+    let program = load_unresolved_program(&canonical)?;
+    let parent = canonical.parent().unwrap_or_else(|| Path::new("."));
+    for import in program.imports {
+        let child = parent.join(import.from);
+        dependency_dfs(&child, visiting, seen)?;
+    }
+    visiting.remove(&canonical);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_dependency_files;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn mk_workspace(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "tcon_loader_{name}_{nanos}_{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join(".tcon")).expect("create .tcon");
+        root
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent");
+        }
+        fs::write(path, content).expect("write file");
+    }
+
+    #[test]
+    fn collects_transitive_dependencies() {
+        let root = mk_workspace("deps");
+        write_file(
+            &root.join(".tcon/base.tcon"),
+            r#"
+export const leaf = { port: 3000 };
+"#,
+        );
+        write_file(
+            &root.join(".tcon/mid.tcon"),
+            r#"
+import { leaf } from "./base.tcon";
+export const shared = leaf;
+"#,
+        );
+        write_file(
+            &root.join(".tcon/top.tcon"),
+            r#"
+import { shared } from "./mid.tcon";
+export const spec = { path: "server.json", format: "json" };
+export const schema = t.object({ port: t.number().default(1) }).strict();
+export const config = shared;
+"#,
+        );
+
+        let deps =
+            collect_dependency_files(&root.join(".tcon/top.tcon")).expect("collect dependencies");
+        assert_eq!(deps.len(), 3, "expected top+mid+base");
+    }
 }
