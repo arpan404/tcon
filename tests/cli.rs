@@ -62,7 +62,7 @@ export const config = { port: 3000 };
     assert!(v.status.success(), "validate failed: {:?}", v);
     let v_out = String::from_utf8_lossy(&v.stdout);
     assert!(
-        v_out.contains("would write") && v_out.contains("tcon check"),
+        v_out.contains("dry-run") && v_out.contains("tcon check"),
         "validate should explain it does not touch disk:\n{v_out}"
     );
     assert!(
@@ -119,6 +119,33 @@ export const config = {};
     assert!(
         stdout.contains("watching") && stdout.contains(".tcon"),
         "unexpected watch stdout: {stdout}"
+    );
+}
+
+#[test]
+fn check_fails_when_output_missing_on_disk() {
+    let root = mk_workspace("check_missing");
+    write_file(
+        &root.join(".tcon/server.tcon"),
+        r#"
+export const spec = { path: "server.json", format: "json", mode: "replace" };
+export const schema = t.object({
+  host: t.string().default("0.0.0.0"),
+  port: t.number().int().min(1).max(65535).default(8080),
+}).strict();
+export const config = { port: 3000 };
+"#,
+    );
+    assert!(
+        !root.join("server.json").exists(),
+        "no prior build artifact"
+    );
+    let chk = run(&root, &["check"]);
+    assert!(!chk.status.success(), "check should fail when spec.path is missing");
+    let out = String::from_utf8_lossy(&chk.stdout);
+    assert!(
+        out.contains("file missing on disk"),
+        "expected explicit missing-file hint:\n{out}"
     );
 }
 
@@ -426,7 +453,9 @@ fn help_and_version_commands_work() {
         "{help_text}"
     );
     assert!(
-        help_text.contains("validate") && help_text.contains("NO_COLOR"),
+        help_text.contains("validate")
+            && help_text.contains("NO_COLOR")
+            && help_text.contains("CLICOLOR"),
         "{help_text}"
     );
 

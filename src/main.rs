@@ -21,11 +21,31 @@ use crate::workspace::Workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io::{self, ErrorKind, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-/// ANSI styling for help text; empty when `NO_COLOR` is set or stderr isn’t a TTY.
+/// Enable ANSI styling for a stream: TTY, no `NO_COLOR`, `CLICOLOR`≠0, `TERM`≠`dumb`.
+fn color_on(stream: &impl IsTerminal) -> bool {
+    if env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    if env::var("CLICOLOR")
+        .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if env::var("TERM")
+        .map(|v| v.eq_ignore_ascii_case("dumb"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    stream.is_terminal()
+}
+
+/// ANSI styling; all codes are empty when color is disabled.
 struct Theme {
     bold: &'static str,
     dim: &'static str,
@@ -34,6 +54,10 @@ struct Theme {
     cmd: &'static str,
     flag: &'static str,
     accent: &'static str,
+    ok: &'static str,
+    bad: &'static str,
+    warn: &'static str,
+    path: &'static str,
 }
 
 fn levenshtein(a: &str, b: &str) -> usize {
@@ -91,15 +115,15 @@ fn suggest_similar_command(input: &str) -> Option<&'static str> {
 
 impl Theme {
     fn for_stderr() -> Self {
-        Self::new(io::stderr().is_terminal())
+        Self::new(color_on(&io::stderr()))
     }
 
     fn for_stdout() -> Self {
-        Self::new(io::stdout().is_terminal())
+        Self::new(color_on(&io::stdout()))
     }
 
     fn new(color: bool) -> Self {
-        if env::var_os("NO_COLOR").is_some() || !color {
+        if !color {
             return Self {
                 bold: "",
                 dim: "",
@@ -108,6 +132,10 @@ impl Theme {
                 cmd: "",
                 flag: "",
                 accent: "",
+                ok: "",
+                bad: "",
+                warn: "",
+                path: "",
             };
         }
         Self {
@@ -118,6 +146,10 @@ impl Theme {
             cmd: "\x1b[1;32m",
             flag: "\x1b[33m",
             accent: "\x1b[35m",
+            ok: "\x1b[1;32m",
+            bad: "\x1b[1;31m",
+            warn: "\x1b[1;33m",
+            path: "\x1b[36m",
         }
     }
 }
@@ -246,7 +278,7 @@ fn usage() {
     );
     eprintln!();
     eprintln!(
-        "{dim}validate = sources only · check = sources vs on-disk outputs · docs/cli-reference.md · NO_COLOR=1{sreset}",
+        "{dim}validate = sources only · check = sources vs on-disk outputs · docs/cli-reference.md · NO_COLOR=1 · CLICOLOR=0{sreset}",
         dim = s.dim,
         sreset = s.reset
     );
@@ -390,19 +422,35 @@ fn run_validate(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
         return Err("no .tcon files found under .tcon/".to_string());
     }
 
+    let s = Theme::for_stdout();
     let mut cache = LoadCache::default();
     for entry_file in entries {
         let (output, _) = compile_entry(ws, &entry_file, &mut cache)?;
-        let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
+        let out_rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
         let entry_rel = entry_file
             .strip_prefix(&ws.tcon_dir)
             .unwrap_or(&entry_file)
             .display();
-        println!("ok  {entry_rel} → would write {rel} (not written)");
+        println!(
+            "{ok}ok{s}  {p}{entry_rel}{s} {d}→{s} {p}{out_rel}{s}  {d}(dry-run; disk not touched){s}",
+            ok = s.ok,
+            p = s.path,
+            d = s.dim,
+            s = s.reset,
+        );
     }
     println!();
     println!(
-        "`validate` only checks `.tcon` sources. Run `tcon check` to compare those results to files on disk, or `tcon build` to update them."
+        "{d}validate{s}  compiled `.tcon` only — did not read or write `{p}spec.path{s}` outputs.",
+        d = s.dim,
+        p = s.path,
+        s = s.reset,
+    );
+    println!(
+        "{d}next{s}     {a}tcon check{s} before commit, or {a}tcon build{s} to refresh artifacts.",
+        d = s.dim,
+        a = s.accent,
+        s = s.reset,
     );
     Ok(())
 }
@@ -413,6 +461,7 @@ fn run_build(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
         return Err("no .tcon files found under .tcon/".to_string());
     }
 
+    let s = Theme::for_stdout();
     let mut cache = LoadCache::default();
     for entry_file in entries {
         let (output, rendered) = compile_entry(ws, &entry_file, &mut cache)?;
@@ -421,9 +470,12 @@ fn run_build(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
                 .map_err(|e| format!("failed creating output directory: {e}"))?;
         }
         fs::write(&output, rendered).map_err(|e| format!("failed writing output file: {e}"))?;
+        let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
         println!(
-            "built {}",
-            output.strip_prefix(&ws.root).unwrap_or(&output).display()
+            "{ok}ok{s}  wrote {p}{rel}{s}",
+            ok = s.ok,
+            p = s.path,
+            s = s.reset,
         );
     }
     Ok(())
@@ -435,22 +487,45 @@ fn run_check(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
         return Err("no .tcon files found under .tcon/".to_string());
     }
 
+    let s = Theme::for_stdout();
+    let ansi = color_on(&io::stdout());
     let mut cache = LoadCache::default();
     let mut drift = 0usize;
     for entry_file in entries {
         let (output, expected) = compile_entry(ws, &entry_file, &mut cache)?;
-        let actual = fs::read_to_string(&output).unwrap_or_default();
+        let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
+        let (actual, missing) = match fs::read_to_string(&output) {
+            Ok(got) => (got, false),
+            Err(e) if e.kind() == ErrorKind::NotFound => (String::new(), true),
+            Err(e) => {
+                return Err(format!(
+                    "failed reading on-disk output {}: {e}",
+                    output.display()
+                ));
+            }
+        };
         if actual != expected {
             drift += 1;
+            let note = if missing {
+                "file missing on disk"
+            } else {
+                "on disk ≠ compiled output"
+            };
             println!(
-                "drift: {}",
-                output.strip_prefix(&ws.root).unwrap_or(&output).display()
+                "{bad}drift{s}  {p}{rel}{s}  {d}({note}){s}",
+                bad = s.bad,
+                p = s.path,
+                d = s.dim,
+                s = s.reset,
             );
-            println!("{}", describe_drift(&actual, &expected));
+            println!("{}", describe_drift(&actual, &expected, ansi));
         } else {
             println!(
-                "ok: {}",
-                output.strip_prefix(&ws.root).unwrap_or(&output).display()
+                "{ok}ok{s}  {p}{rel}{s}  {d}(matches compiled output){s}",
+                ok = s.ok,
+                p = s.path,
+                d = s.dim,
+                s = s.reset,
             );
         }
     }
@@ -467,23 +542,48 @@ fn run_diff(ws: &Workspace, entry: Option<&str>) -> Result<(), String> {
         return Err("no .tcon files found under .tcon/".to_string());
     }
 
+    let s = Theme::for_stdout();
+    let ansi = color_on(&io::stdout());
     let mut cache = LoadCache::default();
     let mut drift = 0usize;
     for entry_file in entries {
         let (output, expected) = compile_entry(ws, &entry_file, &mut cache)?;
-        let actual = fs::read_to_string(&output).unwrap_or_default();
+        let rel = output.strip_prefix(&ws.root).unwrap_or(&output).display();
+        let (actual, missing) = match fs::read_to_string(&output) {
+            Ok(got) => (got, false),
+            Err(e) if e.kind() == ErrorKind::NotFound => (String::new(), true),
+            Err(e) => {
+                return Err(format!(
+                    "failed reading on-disk output {}: {e}",
+                    output.display()
+                ));
+            }
+        };
         if actual != expected {
             drift += 1;
+            let note = if missing {
+                "file missing on disk"
+            } else {
+                "differs from compiled output"
+            };
             println!(
-                "diff: {}",
-                output.strip_prefix(&ws.root).unwrap_or(&output).display()
+                "{warn}diff{s}  {p}{rel}{s}  {d}({note}){s}",
+                warn = s.warn,
+                p = s.path,
+                d = s.dim,
+                s = s.reset,
             );
-            println!("{}", describe_drift(&actual, &expected));
+            println!("{}", describe_drift(&actual, &expected, ansi));
         }
     }
 
     if drift == 0 {
-        println!("no differences");
+        println!(
+            "{ok}ok{s}  {d}no differences: on-disk outputs match compiled results.{s}",
+            ok = s.ok,
+            d = s.dim,
+            s = s.reset,
+        );
         Ok(())
     } else {
         Err(format!("found differences in {drift} file(s)"))
@@ -546,7 +646,7 @@ fn run_watch(ws: &Workspace, entry: Option<&str>, poll_interval: Duration) -> Re
             println!("change detected, rebuilding...");
             println!("changed files: {}", list.join(", "));
             if let Err(e) = run_build(ws, entry) {
-                eprintln!("error: {e}");
+                print_error(ErrorFormat::Text, &e);
             }
             watched = resolve_watch_files(&entries)?;
             stamps = read_stamps(&watched);
@@ -730,11 +830,12 @@ fn parse_diagnostic(message: &str) -> DiagnosticJson {
 fn print_error(format: ErrorFormat, message: &str) {
     match format {
         ErrorFormat::Text => {
-            if message.starts_with("error: ") {
-                eprintln!("{message}");
-            } else {
-                eprintln!("error: {message}");
-            }
+            let s = Theme::for_stderr();
+            let body = message
+                .strip_prefix("error: ")
+                .map(str::trim_start)
+                .unwrap_or(message);
+            eprintln!("{bad}error:{rst} {body}", bad = s.bad, rst = s.reset);
         }
         ErrorFormat::Json => {
             let d = parse_diagnostic(message);
