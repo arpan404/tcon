@@ -373,6 +373,9 @@ fn classify_error_code(message: &str) -> &'static str {
     if message.contains("unterminated string literal") {
         return "E_LEX_UNTERMINATED_STRING";
     }
+    if message.contains("unterminated block comment") {
+        return "E_LEX_UNTERMINATED_BLOCK_COMMENT";
+    }
     if message.contains("missing required export") {
         return "E_EVAL_MISSING_EXPORT";
     }

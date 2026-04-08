@@ -53,13 +53,24 @@ pub fn lex(src: &str, file_name: &str) -> Result<Vec<Token>, String> {
         }
 
         if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '*' {
+            let comment_start = i;
             i += 2;
+            let mut closed = false;
             while i + 1 < bytes.len() {
                 if bytes[i] as char == '*' && bytes[i + 1] as char == '/' {
                     i += 2;
+                    closed = true;
                     break;
                 }
                 i += 1;
+            }
+            if !closed {
+                return Err(format_source_error(
+                    file_name,
+                    src,
+                    comment_start,
+                    "unterminated block comment",
+                ));
             }
             continue;
         }

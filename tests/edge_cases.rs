@@ -576,10 +576,7 @@ export const config = {};
 #[test]
 fn invalid_global_error_format_exits_before_workspace() {
     let root = mk_plain_workspace("bad_fmt_flag");
-    let out = run(
-        &root,
-        &["--error-format", "xml", "build"],
-    );
+    let out = run(&root, &["--error-format", "xml", "build"]);
     assert_eq!(
         out.status.code(),
         Some(2),
@@ -855,4 +852,231 @@ export const config = { s: "line1\nline2\t\"quote\"" };
     let json = fs::read_to_string(root.join("out.json")).expect("read");
     assert!(json.contains("line1"));
     assert!(json.contains("line2"));
+}
+
+// --- Block comments ---
+
+#[test]
+fn lex_unterminated_block_comment_maps_to_stable_code() {
+    let root = mk_workspace("block_comment");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"/* opens but never closes
+export const spec = { path: "out.toml", format: "toml" };
+export const schema = t.object({}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_LEX_UNTERMINATED_BLOCK_COMMENT");
+    assert!(stderr.contains("unterminated block comment"), "{stderr}");
+}
+
+#[test]
+fn block_comment_closing_at_eof_is_accepted() {
+    let root = mk_workspace("block_ok");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+/* trailing block comment */export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({}).strict();
+export const config = {};
+"#,
+    );
+    assert!(run(&root, &["build"]).status.success());
+}
+
+// --- Deep imports ---
+
+#[test]
+fn deep_import_chain_fails_when_leaf_file_missing() {
+    let root = mk_workspace("deep_import");
+    write_file(
+        &root.join(".tcon/level0.tcon"),
+        r#"
+import { v1 } from "./level1.tcon";
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({ x: t.number().default(0) }).strict();
+export const config = v1;
+"#,
+    );
+    write_file(
+        &root.join(".tcon/level1.tcon"),
+        r#"
+import { v2 } from "./level2.tcon";
+export const v1 = v2;
+"#,
+    );
+    write_file(
+        &root.join(".tcon/level2.tcon"),
+        r#"
+import { v3 } from "./level3.tcon";
+export const v2 = v3;
+"#,
+    );
+    // level3.tcon intentionally absent
+
+    let out = run(&root, &["build", "--entry", "level0.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("failed to read") || stderr.contains("No such file"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("level3.tcon"),
+        "expected missing path in stderr: {stderr}"
+    );
+}
+
+#[test]
+fn deep_import_chain_four_levels_resolves() {
+    let root = mk_workspace("deep_ok");
+    write_file(
+        &root.join(".tcon/leaf.tcon"),
+        "export const payload = { x: 42 };",
+    );
+    write_file(
+        &root.join(".tcon/l2.tcon"),
+        r#"
+import { payload } from "./leaf.tcon";
+export const v2 = payload;
+"#,
+    );
+    write_file(
+        &root.join(".tcon/l1.tcon"),
+        r#"
+import { v2 } from "./l2.tcon";
+export const v1 = v2;
+"#,
+    );
+    // Resolving `config = v1` follows v1 → v2 → payload; each hop must exist in this file's map.
+    write_file(
+        &root.join(".tcon/entry.tcon"),
+        r#"
+import { v1, v2 } from "./l1.tcon";
+import { payload } from "./leaf.tcon";
+export const spec = { path: "deep.json", format: "json" };
+export const schema = t.object({ x: t.number().default(0) }).strict();
+export const config = v1;
+"#,
+    );
+    assert!(
+        run(&root, &["build", "--entry", "entry.tcon"])
+            .status
+            .success()
+    );
+    let json = fs::read_to_string(root.join("deep.json")).expect("read");
+    assert!(json.contains("\"x\": 42"));
+}
+
+// --- Emitter corner cases (TOML / properties) ---
+
+#[test]
+fn toml_rejects_null_in_normalized_value() {
+    let root = mk_workspace("toml_null");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.toml", format: "toml" };
+export const schema = t.object({
+  items: t.array(t.literal(null)),
+}).strict();
+export const config = { items: [null] };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("toml emitter cannot represent null"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn toml_emits_dotted_and_quoted_key_paths_in_structure() {
+    let root = mk_workspace("toml_keys");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "app.toml", format: "toml" };
+export const schema = t.object({
+  "service.name": t.string().default("api"),
+  meta: t.object({
+    "build:no": t.number().int().default(1),
+  }).strict(),
+}).strict();
+export const config = {
+  "service.name": "worker",
+  meta: { "build:no": 7 },
+};
+"#,
+    );
+    assert!(run(&root, &["build"]).status.success());
+    let toml = fs::read_to_string(root.join("app.toml")).expect("read");
+    assert!(
+        toml.contains("service.name") && toml.contains("worker"),
+        "unexpected toml:\n{toml}"
+    );
+    assert!(
+        toml.contains("build:no") || toml.contains("[meta]"),
+        "unexpected toml:\n{toml}"
+    );
+}
+
+#[test]
+fn properties_escapes_equals_newlines_and_backslash_in_values() {
+    let root = mk_workspace("props_escape");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "app.properties", format: "properties" };
+export const schema = t.object({
+  "sec:tion": t.object({
+    token: t.string(),
+  }).strict(),
+}).strict();
+export const config = {
+  "sec:tion": { token: "p=a\\ss\nword\t" },
+};
+"#,
+    );
+    assert!(run(&root, &["build"]).status.success());
+    let props = fs::read_to_string(root.join("app.properties")).expect("read");
+    assert!(
+        props.contains("sec:tion.token="),
+        "unexpected properties:\n{props}"
+    );
+    assert!(
+        props.contains("\\=") || props.contains("\\\\"),
+        "expected escapes in value:\n{props}"
+    );
+}
+
+#[test]
+fn properties_rejects_null_leaf() {
+    let root = mk_workspace("props_null");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "app.properties", format: "properties" };
+export const schema = t.object({
+  items: t.array(t.literal(null)),
+}).strict();
+export const config = { items: [null] };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("properties emitter cannot represent null"),
+        "unexpected stderr: {stderr}"
+    );
 }
