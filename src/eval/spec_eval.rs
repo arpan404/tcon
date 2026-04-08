@@ -20,6 +20,9 @@ pub fn evaluate_spec_expr(expr: &Expr, file_name: &str) -> Result<Spec, String> 
     }
 
     let path = path.ok_or_else(|| format!("{file_name}: spec.path is required"))?;
+    if path.trim().is_empty() {
+        return Err(format!("{file_name}: spec.path must not be empty"));
+    }
     let format = format.unwrap_or_else(|| "json".to_string());
     Ok(Spec { path, format, mode })
 }

@@ -41,7 +41,7 @@ export const spec = {
 - `.min(n)`
 - `.max(n)`
 - `.int()`
-- `.strict()`
+- `.strict()` — unknown keys in `config` for that object are **not** copied into the compiled output (they are ignored). Validation does not fail solely because of extra keys; use review/drift checks if you need to catch them.
 
 ## Imports
 

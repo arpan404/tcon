@@ -49,18 +49,22 @@ impl Workspace {
     pub fn find_tcon_entries(&self) -> Result<Vec<PathBuf>, String> {
         let mut out = Vec::new();
         collect_tcon_entries(&self.tcon_dir, &mut out)?;
-        // sort so the output is determinstic across OS/filesystem order.
+        // sort so the output is deterministic across OS/filesystem order.
         out.sort();
         Ok(out)
     }
     /// Resolve an entry argument:
-    /// - if absoulte: accept it
-    /// - otherwise treat it as a relative tot `.tcon/`
+    /// - if absolute: verify it exists on disk
+    /// - otherwise treat it as relative to `.tcon/`
     pub fn resolve_entry(&self, entry: &str) -> Result<PathBuf, String> {
         let p = Path::new(entry);
 
         if p.is_absolute() {
-            return Ok(p.to_path_buf());
+            let buf = p.to_path_buf();
+            if !buf.exists() {
+                return Err(format!("File not found: {}", buf.display()));
+            }
+            return Ok(buf);
         }
 
         let candidate = self.tcon_dir.join(entry);

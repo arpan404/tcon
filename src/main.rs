@@ -104,9 +104,6 @@ fn compile_entry(
             ));
         }
     }
-    if spec.mode.is_none() {
-        // Keep the mode field explicit in CLI semantics for future expansions.
-    }
     if let Some(mode) = &spec.mode
         && mode != "replace"
     {
@@ -393,6 +390,8 @@ fn classify_error_code(message: &str) -> &'static str {
         || message.contains("t.union() requires")
         || message.contains("t.enum() requires")
         || message.contains(".strict() only valid")
+        || message.contains("duplicate key in object literal")
+        || message.contains("import requires at least one binding")
     {
         return "E_PARSE_OR_SCHEMA";
     }

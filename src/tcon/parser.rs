@@ -1,6 +1,7 @@
 use crate::model::{ExportConst, Expr, ImportStmt, Key, Program, Span};
 use crate::tcon::diagnostic::format_source_error;
 use crate::tcon::lexer::{Token, TokenKind};
+use std::collections::BTreeSet;
 
 pub fn parse(tokens: &[Token], file_name: &str, src: &str) -> Result<Program, String> {
     let mut p = Parser {
@@ -36,6 +37,10 @@ impl<'a> Parser<'a> {
     fn parse_import_stmt(&mut self) -> Result<ImportStmt, String> {
         self.expect_simple(TokenKind::Import)?;
         self.expect_simple(TokenKind::LBrace)?;
+        if self.peek_simple(TokenKind::RBrace) {
+            let pos = self.tokens.get(self.i).map(|t| t.span.start).unwrap_or(0);
+            return Err(self.err_at(pos, "import requires at least one binding"));
+        }
         let mut names = Vec::new();
         loop {
             let (name, _) = self.expect_ident()?;
@@ -117,6 +122,7 @@ impl<'a> Parser<'a> {
 
     fn parse_object(&mut self, start: usize) -> Result<Expr, String> {
         let mut fields = Vec::new();
+        let mut seen = BTreeSet::<String>::new();
         while !self.peek_simple(TokenKind::RBrace) {
             let key_tok = self.next().ok_or_else(|| self.err("unexpected EOF"))?;
             let key = match &key_tok.kind {
@@ -129,6 +135,12 @@ impl<'a> Parser<'a> {
                     ));
                 }
             };
+            let field_name = match &key {
+                Key::Ident(s) | Key::String(s) => s.clone(),
+            };
+            if !seen.insert(field_name) {
+                return Err(self.err_at(key_tok.span.start, "duplicate key in object literal"));
+            }
             self.expect_simple(TokenKind::Colon)?;
             let value = self.parse_expr()?;
             let span = Span::new(key_tok.span.start, expr_span(&value).end);

@@ -45,15 +45,16 @@ fn render(value: &Value, depth: usize) -> String {
             let mut out = String::new();
             let len = map.len();
             for (i, (k, v)) in map.iter().enumerate() {
+                let k_yaml = yaml_key(k);
                 match v {
                     Value::Object(_) | Value::Array(_) => {
-                        out.push_str(&format!("{indent}{k}:\n"));
+                        out.push_str(&format!("{indent}{k_yaml}:\n"));
                         out.push_str(&next_indent);
                         out.push_str(
                             &render(v, depth + 1).replace('\n', &format!("\n{next_indent}")),
                         );
                     }
-                    _ => out.push_str(&format!("{indent}{k}: {}", render(v, depth + 1))),
+                    _ => out.push_str(&format!("{indent}{k_yaml}: {}", render(v, depth + 1))),
                 }
                 if i + 1 < len {
                     out.push('\n');
@@ -65,6 +66,23 @@ fn render(value: &Value, depth: usize) -> String {
 }
 
 fn quote_string(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
     format!("\"{escaped}\"")
+}
+
+/// Plain keys must be unambiguous for YAML 1.2 readers (avoid `:` / spaces / reserved words).
+fn yaml_key(k: &str) -> String {
+    let plain_ok = !k.is_empty()
+        && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !matches!(k, "true" | "false" | "null");
+    if plain_ok {
+        k.to_string()
+    } else {
+        quote_string(k)
+    }
 }

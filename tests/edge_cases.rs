@@ -1080,3 +1080,169 @@ export const config = { items: [null] };
         "unexpected stderr: {stderr}"
     );
 }
+
+// --- Parser / workspace / YAML quality ---
+
+#[test]
+fn duplicate_object_key_is_rejected() {
+    let root = mk_workspace("dup_key");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  a: t.number(),
+  a: t.string(),
+}).strict();
+export const config = { a: 1 };
+"#,
+    );
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_PARSE_OR_SCHEMA");
+    assert!(
+        stderr.contains("duplicate key in object literal"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn duplicate_object_key_detects_ident_and_string_same_name() {
+    let root = mk_workspace("dup_key_mixed");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({
+  x: t.number(),
+  "x": t.string(),
+}).strict();
+export const config = { x: 1 };
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("duplicate key in object literal"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn import_list_must_not_be_empty() {
+    let root = mk_workspace("empty_import");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+import { } from "./nope.tcon";
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(
+        &root,
+        &["--error-format", "json", "build", "--entry", "x.tcon"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_stderr_contains_json_code(&stderr, "E_PARSE_OR_SCHEMA");
+    assert!(
+        stderr.contains("import requires at least one binding"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn spec_path_empty_string_rejected() {
+    let root = mk_workspace("empty_spec_path");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "", format: "json" };
+export const schema = t.object({}).strict();
+export const config = {};
+"#,
+    );
+    let out = run(&root, &["build", "--entry", "x.tcon"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("spec.path must not be empty"), "{stderr}");
+}
+
+#[test]
+fn absolute_entry_path_must_exist_on_disk() {
+    let root = mk_workspace("abs_miss");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.json", format: "json" };
+export const schema = t.object({}).strict();
+export const config = {};
+"#,
+    );
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let missing = std::env::temp_dir().join(format!(
+        "tcon_abs_missing_{}_{}.tcon",
+        std::process::id(),
+        nanos
+    ));
+    assert!(!missing.exists(), "precondition: path should not exist");
+    let entry = missing.to_str().expect("utf8 temp path");
+    let out = run(&root, &["build", "--entry", entry]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("File not found"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn yaml_emits_quoted_keys_for_reserved_and_special_characters() {
+    let root = mk_workspace("yaml_keys");
+    write_file(
+        &root.join(".tcon/x.tcon"),
+        r#"
+export const spec = { path: "out.yaml", format: "yaml" };
+export const schema = t.object({
+  ok_plain: t.string(),
+  "meta:kv": t.string(),
+  "has space": t.string(),
+  "true": t.string(),
+}).strict();
+export const config = {
+  ok_plain: "a",
+  "meta:kv": "b",
+  "has space": "c",
+  "true": "d",
+};
+"#,
+    );
+    assert!(run(&root, &["build"]).status.success());
+    let yaml = fs::read_to_string(root.join("out.yaml")).expect("read");
+    assert!(
+        yaml.contains("\"meta:kv\""),
+        "colon in key should force quotes:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("\"has space\""),
+        "space in key should force quotes:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("\"true\""),
+        "reserved word keys should be quoted:\n{yaml}"
+    );
+    assert!(
+        yaml.contains("ok_plain:") && !yaml.contains("\"ok_plain\""),
+        "simple keys stay unquoted:\n{yaml}"
+    );
+}
