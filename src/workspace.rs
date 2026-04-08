@@ -1,4 +1,4 @@
-use crate::errors::TconError;
+use std::path::Path;
 use std::path::PathBuf;
 
 /// Represent a discovered workspace, which is a directory containing `./tcon/`.
@@ -16,27 +16,29 @@ impl Workspace {
     /// Discover workspace by:
     /// - using  the provided root, or current working directory if root is None.
     /// - checking the presence of `.tcon/` directory
-    pub fn discover(root: Option<&str>) -> Result<Self, TconError> {
+    pub fn discover(root: Option<&str>) -> Result<Self, String> {
         let root = match root {
             Some(r) => PathBuf::from(r),
-            None => std::env::current_dir()?,
+            None => std::env::current_dir().map_err(|e| format!("failed reading cwd: {e}"))?,
         };
 
         let tcon_dir = root.join(".tcon");
         if !tcon_dir.is_dir() {
-            return Err(TconError::msg(format!(
+            return Err(format!(
                 "Missing .tcon directory at {}",
                 tcon_dir.display()
-            )));
+            ));
         }
         Ok(Self { root, tcon_dir })
     }
 
     /// Find all the entry files under `.tcon/` with the `.tcon` extension
-    pub fn find_tcon_entries(&self) -> Result<Vec<PathBuf>, TconError> {
+    pub fn find_tcon_entries(&self) -> Result<Vec<PathBuf>, String> {
         let mut out = Vec::new();
-        for f in std::fs::read_dir(&self.tcon_dir)? {
-            let f = f?;
+        for f in std::fs::read_dir(&self.tcon_dir)
+            .map_err(|e| format!("failed to list .tcon directory: {e}"))?
+        {
+            let f = f.map_err(|e| format!("failed to read dir entry: {e}"))?;
             let p = f.path();
 
             // Include only the files
@@ -56,7 +58,7 @@ impl Workspace {
     /// Resolve an entry argument:
     /// - if absoulte: accept it
     /// - otherwise treat it as a relative tot `.tcon/`
-    pub fn resolve_entry(&self, entry: &str) -> Result<PathBuf, TconError> {
+    pub fn resolve_entry(&self, entry: &str) -> Result<PathBuf, String> {
         let p = Path::new(entry);
 
         if p.is_absolute() {
@@ -67,10 +69,10 @@ impl Workspace {
         if candidate.exists() {
             Ok(candidate)
         } else {
-            Err(TconError::msg(format!(
+            Err(format!(
                 "File not found: {}",
                 candidate.display()
-            )))
+            ))
         }
     }
 }

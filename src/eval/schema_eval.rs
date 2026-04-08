@@ -1,0 +1,175 @@
+use crate::eval::config_eval::evaluate_config_expr;
+use crate::model::{Expr, Key, Schema, Value};
+use std::collections::BTreeMap;
+
+pub fn evaluate_schema_expr(expr: &Expr, file_name: &str) -> Result<Schema, String> {
+    eval_chain(expr, file_name)
+}
+
+fn eval_chain(expr: &Expr, file_name: &str) -> Result<Schema, String> {
+    match expr {
+        Expr::Call(callee, args, _) => match callee.as_ref() {
+            Expr::Member(base, method, _) => {
+                if let Expr::Ident(root, _) = base.as_ref() && root == "t" {
+                    build_base(method, args, file_name)
+                } else {
+                    let mut schema = eval_chain(base, file_name)?;
+                    apply_method(&mut schema, method, args, file_name)?;
+                    Ok(schema)
+                }
+            }
+            _ => Err(format!(
+                "{file_name}: unsupported schema expression; expected method call"
+            )),
+        },
+        _ => Err(format!(
+            "{file_name}: schema must be built from t.*() call chains"
+        )),
+    }
+}
+
+fn build_base(name: &str, args: &[Expr], file_name: &str) -> Result<Schema, String> {
+    match name {
+        "string" => Ok(Schema::String {
+            default: None,
+            optional: false,
+            min: None,
+            max: None,
+        }),
+        "number" => Ok(Schema::Number {
+            default: None,
+            optional: false,
+            min: None,
+            max: None,
+            int: false,
+        }),
+        "boolean" | "bool" => Ok(Schema::Boolean {
+            default: None,
+            optional: false,
+        }),
+        "object" => {
+            if args.len() != 1 {
+                return Err(format!("{file_name}: t.object() expects one argument"));
+            }
+            let Expr::Object(fields, _) = &args[0] else {
+                return Err(format!("{file_name}: t.object() argument must be an object"));
+            };
+            let mut out = BTreeMap::new();
+            for (k, v, _) in fields {
+                let name = match k {
+                    Key::Ident(s) | Key::String(s) => s.clone(),
+                };
+                out.insert(name, eval_chain(v, file_name)?);
+            }
+            Ok(Schema::Object {
+                fields: out,
+                strict: false,
+                default: None,
+                optional: false,
+            })
+        }
+        "array" => {
+            if args.len() != 1 {
+                return Err(format!("{file_name}: t.array() expects one argument"));
+            }
+            Ok(Schema::Array {
+                item: Box::new(eval_chain(&args[0], file_name)?),
+                default: None,
+                optional: false,
+            })
+        }
+        _ => Err(format!(
+            "{file_name}: unsupported schema root constructor t.{name}()"
+        )),
+    }
+}
+
+fn apply_method(schema: &mut Schema, method: &str, args: &[Expr], file_name: &str) -> Result<(), String> {
+    match method {
+        "optional" => {
+            if !args.is_empty() {
+                return Err(format!("{file_name}: .optional() does not take arguments"));
+            }
+            set_optional(schema, true);
+            Ok(())
+        }
+        "default" => {
+            if args.len() != 1 {
+                return Err(format!("{file_name}: .default() expects one argument"));
+            }
+            let value = evaluate_config_expr(&args[0], file_name)?;
+            set_default(schema, value);
+            Ok(())
+        }
+        "min" => {
+            if args.len() != 1 {
+                return Err(format!("{file_name}: .min() expects one argument"));
+            }
+            let n = parse_number_literal(&args[0], file_name, ".min()")?;
+            match schema {
+                Schema::String { min, .. } | Schema::Number { min, .. } => {
+                    *min = Some(n);
+                    Ok(())
+                }
+                _ => Err(format!("{file_name}: .min() not supported for this schema type")),
+            }
+        }
+        "max" => {
+            if args.len() != 1 {
+                return Err(format!("{file_name}: .max() expects one argument"));
+            }
+            let n = parse_number_literal(&args[0], file_name, ".max()")?;
+            match schema {
+                Schema::String { max, .. } | Schema::Number { max, .. } => {
+                    *max = Some(n);
+                    Ok(())
+                }
+                _ => Err(format!("{file_name}: .max() not supported for this schema type")),
+            }
+        }
+        "int" => match schema {
+            Schema::Number { int, .. } => {
+                *int = true;
+                Ok(())
+            }
+            _ => Err(format!("{file_name}: .int() only valid on number schema")),
+        },
+        "strict" => match schema {
+            Schema::Object { strict, .. } => {
+                *strict = true;
+                Ok(())
+            }
+            _ => Err(format!("{file_name}: .strict() only valid on object schema")),
+        },
+        _ => Err(format!("{file_name}: unsupported schema method .{method}()")),
+    }
+}
+
+fn parse_number_literal(expr: &Expr, file_name: &str, name: &str) -> Result<f64, String> {
+    match expr {
+        Expr::Number(s, _) => s
+            .parse::<f64>()
+            .map_err(|_| format!("{file_name}: {name} expects a numeric literal")),
+        _ => Err(format!("{file_name}: {name} expects a numeric literal")),
+    }
+}
+
+fn set_optional(schema: &mut Schema, optional: bool) {
+    match schema {
+        Schema::String { optional: o, .. }
+        | Schema::Number { optional: o, .. }
+        | Schema::Boolean { optional: o, .. }
+        | Schema::Object { optional: o, .. }
+        | Schema::Array { optional: o, .. } => *o = optional,
+    }
+}
+
+fn set_default(schema: &mut Schema, value: Value) {
+    match schema {
+        Schema::String { default, .. }
+        | Schema::Number { default, .. }
+        | Schema::Boolean { default, .. }
+        | Schema::Object { default, .. }
+        | Schema::Array { default, .. } => *default = Some(value),
+    }
+}

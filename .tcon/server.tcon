@@ -1,0 +1,18 @@
+export const spec = {
+  path: "server.json",
+  format: "json",
+  mode: "replace",
+};
+
+export const schema = t
+  .object({
+    host: t.string().default("0.0.0.0"),
+    port: t.number().int().min(1).max(65535).default(8080),
+    tls: t.boolean().optional(),
+  })
+  .strict();
+
+export const config = {
+  port: 3000,
+  ignored: true,
+};
