@@ -260,6 +260,21 @@ export const config = { port: @ };
     );
     assert!(!out.status.success(), "build should fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("{\"error\":\""), "{stderr}");
-    assert!(stderr.contains("\\n"), "{stderr}");
+    assert!(stderr.contains("\"code\""), "{stderr}");
+    assert!(stderr.contains("\"message\""), "{stderr}");
+    assert!(stderr.contains("\"file\""), "{stderr}");
+    assert!(stderr.contains("\"line\""), "{stderr}");
+    assert!(stderr.contains("\"col\""), "{stderr}");
+}
+
+#[test]
+fn init_generates_tcon_presets() {
+    let root = mk_workspace("init_cmd");
+    let out = run(&root, &["init"]);
+    assert!(out.status.success(), "init failed: {:?}", out);
+    assert!(root.join(".tcon/sample_json.tcon").exists());
+    assert!(root.join(".tcon/sample_yaml.tcon").exists());
+    assert!(root.join(".tcon/sample_env.tcon").exists());
+    assert!(root.join(".tcon/sample_toml.tcon").exists());
+    assert!(root.join(".tcon/sample_properties.tcon").exists());
 }

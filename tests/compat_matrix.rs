@@ -86,6 +86,38 @@ export const config = { port: 3000 };
             output: "env_case.env",
             expected: "HOST=0.0.0.0\nPORT=3000\n",
         },
+        SuccessCase {
+            name: "toml_format",
+            entry: "toml_case.tcon",
+            source: r#"
+export const spec = { path: "toml_case.toml", format: "toml" };
+export const schema = t.object({
+  app: t.object({
+    host: t.string().default("0.0.0.0"),
+    port: t.number().default(8080),
+  }).strict(),
+}).strict();
+export const config = { app: { port: 3000 } };
+"#,
+            output: "toml_case.toml",
+            expected: "\n[app]\nhost = \"0.0.0.0\"\nport = 3000\n",
+        },
+        SuccessCase {
+            name: "properties_format",
+            entry: "properties_case.tcon",
+            source: r#"
+export const spec = { path: "properties_case.properties", format: "properties" };
+export const schema = t.object({
+  app: t.object({
+    host: t.string().default("0.0.0.0"),
+    port: t.number().default(8080),
+  }).strict(),
+}).strict();
+export const config = { app: { port: 3000 } };
+"#,
+            output: "properties_case.properties",
+            expected: "app.host=0.0.0.0\napp.port=3000\n",
+        },
     ];
 
     for case in cases {
@@ -120,6 +152,16 @@ export const schema = t.object({ k: t.string().default("v") }).strict();
 export const config = {};
 "#,
             expected_error: "env output path must end with '.env'",
+        },
+        FailureCase {
+            name: "bad_properties_extension",
+            entry: "bad_props_ext.tcon",
+            source: r#"
+export const spec = { path: "bad_props.txt", format: "properties" };
+export const schema = t.object({ k: t.string().default("v") }).strict();
+export const config = {};
+"#,
+            expected_error: "properties output path must end with '.properties'",
         },
     ];
 

@@ -9,6 +9,8 @@ mod workspace;
 use crate::diff::describe_drift;
 use crate::emit::env::to_env;
 use crate::emit::json::to_pretty_json;
+use crate::emit::properties::to_properties;
+use crate::emit::toml::to_toml;
 use crate::emit::yaml::to_yaml;
 use crate::eval::{evaluate_config, evaluate_schema, evaluate_spec};
 use crate::tcon::loader::{
@@ -36,6 +38,7 @@ fn usage() {
     eprintln!("  tcon [--error-format text|json] diff [--entry <file.tcon>]");
     eprintln!("  tcon [--error-format text|json] print --entry <file.tcon>");
     eprintln!("  tcon [--error-format text|json] watch [--entry <file.tcon>]");
+    eprintln!("  tcon [--error-format text|json] init [--preset <name>] [--force]");
 }
 
 fn parse_optional_entry(args: &[String]) -> Result<Option<&str>, String> {
@@ -70,9 +73,12 @@ fn compile_entry(
     let exports = load_program_cached(entry_file, cache)?;
     let file_name = entry_file.display().to_string();
     let spec = evaluate_spec(&exports, &file_name)?;
-    if !matches!(spec.format.as_str(), "json" | "yaml" | "env") {
+    if !matches!(
+        spec.format.as_str(),
+        "json" | "yaml" | "env" | "toml" | "properties"
+    ) {
         return Err(format!(
-            "{}: unsupported spec.format='{}' (supported: json, yaml, env)",
+            "{}: unsupported spec.format='{}' (supported: json, yaml, env, toml, properties)",
             file_name, spec.format
         ));
     }
@@ -81,6 +87,15 @@ fn compile_entry(
         if !lower.ends_with(".env") {
             return Err(format!(
                 "{}: env output path must end with '.env'",
+                file_name
+            ));
+        }
+    }
+    if spec.format == "properties" {
+        let lower = spec.path.to_ascii_lowercase();
+        if !lower.ends_with(".properties") {
+            return Err(format!(
+                "{}: properties output path must end with '.properties'",
                 file_name
             ));
         }
@@ -104,6 +119,8 @@ fn compile_entry(
         "json" => format!("{}\n", to_pretty_json(&normalized)),
         "yaml" => format!("{}\n", to_yaml(&normalized)),
         "env" => format!("{}\n", to_env(&normalized)?),
+        "toml" => format!("{}\n", to_toml(&normalized)?),
+        "properties" => format!("{}\n", to_properties(&normalized)?),
         _ => unreachable!(),
     };
     Ok((output_path, rendered))
@@ -320,6 +337,15 @@ fn parse_global_args(args: &[String]) -> Result<(ErrorFormat, String, Vec<String
     Ok((format, cmd.clone(), positional[1..].to_vec()))
 }
 
+#[derive(Debug, Clone)]
+struct DiagnosticJson {
+    code: &'static str,
+    message: String,
+    file: Option<String>,
+    line: Option<usize>,
+    col: Option<usize>,
+}
+
 fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for ch in s.chars() {
@@ -336,11 +362,254 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+fn classify_error_code(message: &str) -> &'static str {
+    if message.contains("unexpected character") {
+        return "E_LEX_UNEXPECTED_CHAR";
+    }
+    if message.contains("unterminated string literal") {
+        return "E_LEX_UNTERMINATED_STRING";
+    }
+    if message.contains("missing required export") {
+        return "E_EVAL_MISSING_EXPORT";
+    }
+    if message.contains("circular import detected") {
+        return "E_IMPORT_CYCLE";
+    }
+    if message.contains("enum value not in allowed variants") {
+        return "E_VALIDATE_ENUM";
+    }
+    if message.contains("unsupported spec.format") {
+        return "E_SPEC_FORMAT";
+    }
+    if message.contains("expected ") || message.contains("unsupported schema") {
+        return "E_PARSE_OR_SCHEMA";
+    }
+    "E_RUNTIME"
+}
+
+fn parse_diagnostic(message: &str) -> DiagnosticJson {
+    let mut file = None;
+    let mut line = None;
+    let mut col = None;
+    for l in message.lines() {
+        let trimmed = l.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("--> ") {
+            let mut parts = rest.rsplitn(3, ':');
+            let c = parts.next();
+            let ln = parts.next();
+            let f = parts.next();
+            if let (Some(c), Some(ln), Some(f)) = (c, ln, f) {
+                file = Some(f.to_string());
+                line = ln.parse::<usize>().ok();
+                col = c.parse::<usize>().ok();
+            }
+        }
+    }
+    let first_line = message.lines().next().unwrap_or(message);
+    let msg = if let Some(rest) = first_line.strip_prefix("error: ") {
+        rest.to_string()
+    } else {
+        first_line.to_string()
+    };
+    DiagnosticJson {
+        code: classify_error_code(message),
+        message: msg,
+        file,
+        line,
+        col,
+    }
+}
+
 fn print_error(format: ErrorFormat, message: &str) {
     match format {
-        ErrorFormat::Text => eprintln!("error: {message}"),
-        ErrorFormat::Json => eprintln!("{{\"error\":\"{}\"}}", json_escape(message)),
+        ErrorFormat::Text => {
+            if message.starts_with("error: ") {
+                eprintln!("{message}");
+            } else {
+                eprintln!("error: {message}");
+            }
+        }
+        ErrorFormat::Json => {
+            let d = parse_diagnostic(message);
+            let file = d.file.unwrap_or_default();
+            let line = d
+                .line
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string());
+            let col = d
+                .col
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string());
+            let file_json = if file.is_empty() {
+                "null".to_string()
+            } else {
+                format!("\"{}\"", json_escape(&file))
+            };
+            eprintln!(
+                "{{\"code\":\"{}\",\"message\":\"{}\",\"file\":{},\"line\":{},\"col\":{}}}",
+                d.code,
+                json_escape(&d.message),
+                file_json,
+                line,
+                col
+            );
+        }
     }
+}
+
+fn run_init(ws: &Workspace, args: &[String]) -> Result<(), String> {
+    let mut preset: Option<&str> = None;
+    let mut force = false;
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--preset" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "missing value for --preset".to_string())?;
+                preset = Some(v.as_str());
+                i += 2;
+            }
+            "--force" => {
+                force = true;
+                i += 1;
+            }
+            other => {
+                return Err(format!("unknown init argument: {other}"));
+            }
+        }
+    }
+
+    let presets = match preset {
+        Some("json") => vec![("sample_json.tcon", init_json())],
+        Some("yaml") => vec![("sample_yaml.tcon", init_yaml())],
+        Some("env") => vec![("sample_env.tcon", init_env())],
+        Some("toml") => vec![("sample_toml.tcon", init_toml())],
+        Some("properties") => vec![("sample_properties.tcon", init_properties())],
+        Some("all") | None => vec![
+            ("sample_json.tcon", init_json()),
+            ("sample_yaml.tcon", init_yaml()),
+            ("sample_env.tcon", init_env()),
+            ("sample_toml.tcon", init_toml()),
+            ("sample_properties.tcon", init_properties()),
+        ],
+        Some(other) => return Err(format!("unknown preset '{other}'")),
+    };
+
+    for (name, content) in presets {
+        let path = ws.tcon_dir.join(name);
+        if path.exists() && !force {
+            println!(
+                "skip {} (already exists, use --force)",
+                path.strip_prefix(&ws.root).unwrap_or(&path).display()
+            );
+            continue;
+        }
+        fs::write(&path, content).map_err(|e| format!("failed writing {}: {e}", path.display()))?;
+        println!(
+            "init {}",
+            path.strip_prefix(&ws.root).unwrap_or(&path).display()
+        );
+    }
+    Ok(())
+}
+
+fn init_json() -> &'static str {
+    r#"export const spec = {
+  path: "sample.json",
+  format: "json",
+  mode: "replace",
+};
+
+export const schema = t.object({
+  host: t.string().default("0.0.0.0"),
+  port: t.number().int().default(8080),
+}).strict();
+
+export const config = {
+  port: 3000,
+};
+"#
+}
+
+fn init_yaml() -> &'static str {
+    r#"export const spec = {
+  path: "sample.yaml",
+  format: "yaml",
+  mode: "replace",
+};
+
+export const schema = t.object({
+  host: t.string().default("0.0.0.0"),
+  port: t.number().int().default(8080),
+}).strict();
+
+export const config = {
+  port: 3000,
+};
+"#
+}
+
+fn init_env() -> &'static str {
+    r#"export const spec = {
+  path: "sample.env",
+  format: "env",
+  mode: "replace",
+};
+
+export const schema = t.object({
+  host: t.string().default("0.0.0.0"),
+  port: t.number().int().default(8080),
+}).strict();
+
+export const config = {
+  port: 3000,
+};
+"#
+}
+
+fn init_toml() -> &'static str {
+    r#"export const spec = {
+  path: "sample.toml",
+  format: "toml",
+  mode: "replace",
+};
+
+export const schema = t.object({
+  app: t.object({
+    name: t.string().default("tcon-app"),
+    port: t.number().int().default(8080),
+  }).strict(),
+}).strict();
+
+export const config = {
+  app: {
+    port: 3000,
+  },
+};
+"#
+}
+
+fn init_properties() -> &'static str {
+    r#"export const spec = {
+  path: "sample.properties",
+  format: "properties",
+  mode: "replace",
+};
+
+export const schema = t.object({
+  app: t.object({
+    host: t.string().default("0.0.0.0"),
+    port: t.number().int().default(8080),
+  }).strict(),
+}).strict();
+
+export const config = {
+  app: {
+    port: 3000,
+  },
+};
+"#
 }
 
 fn main() {
@@ -368,6 +637,7 @@ fn main() {
         "diff" => parse_optional_entry(&rest).and_then(|entry| run_diff(&ws, entry)),
         "print" => parse_required_entry(&rest).and_then(|entry| run_print(&ws, entry)),
         "watch" => parse_optional_entry(&rest).and_then(|entry| run_watch(&ws, entry)),
+        "init" => run_init(&ws, &rest),
         _ => {
             usage();
             Err(format!("unknown command: {cmd}"))

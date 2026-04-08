@@ -15,16 +15,19 @@ It compiles `.tcon` files (TypeScript-like DSL) into deterministic config output
 - `tcon diff [--entry <file.tcon>]` - show first-difference drift summaries
 - `tcon print --entry <file.tcon>` - print parsed AST/program
 - `tcon watch [--entry <file.tcon>]` - rebuild when entry files change
+- `tcon init [--preset <name>] [--force]` - scaffold `.tcon` entries for common formats
 
 Global flags:
 
-- `--error-format text|json` - emit human-readable or machine-readable errors
+- `--error-format text|json` - emit human-readable or machine-readable structured errors
 
 ## Supported output formats
 
 - `json`
 - `yaml`
 - `env`
+- `toml`
+- `properties`
 
 ## Minimal `.tcon` example
 

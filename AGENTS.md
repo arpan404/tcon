@@ -88,11 +88,13 @@ flowchart TD
 - `tcon watch [--entry <file.tcon>]`
   - Runs an initial build, then rebuilds when entry or transitive imported `.tcon` files change.
 - Global: `--error-format text|json`
-  - Controls stderr output format for automation/tooling integration.
+  - Controls stderr output format for automation/tooling integration (`code/message/file/line/col` in JSON mode).
+- `tcon init [--preset <name>] [--force]`
+  - Scaffolds starter `.tcon` files for supported output presets.
 
 ## Implemented Scope
 
-- Output formats: JSON, YAML, ENV.
+- Output formats: JSON, YAML, ENV, TOML, PROPERTIES.
 - Schema roots: `t.string()`, `t.number()`, `t.boolean()`/`t.bool()`, `t.object({...})`, `t.array(...)`, `t.enum([...])`, `t.union([...])`.
 - Supported modifiers: `.default(value)`, `.optional()`, `.min(n)`, `.max(n)`, `.int()`, `.strict()`.
 - Imports: `import { symbol } from "./other.tcon";` with cycle detection and symbol validation.
