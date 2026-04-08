@@ -2,7 +2,7 @@
 
 ## Current Stability Policy
 
-`tcon` is in a pre-v1 hardening phase. Breaking changes are allowed while we finalize the language and runtime contract. Once v1 is tagged, schema/CLI behavior will be SemVer-governed.
+`tcon` is currently at `v1.0.0`. Schema/CLI behavior is SemVer-governed, and compatibility is tracked via `compat/v1/` snapshots and diagnostics contracts under `docs/diagnostics/`.
 
 ## Development Quality Gates
 

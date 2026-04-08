@@ -302,5 +302,5 @@ fn help_and_version_commands_work() {
     let version = run(&root, &["--version"]);
     assert!(version.status.success());
     let version_text = String::from_utf8_lossy(&version.stdout);
-    assert!(version_text.contains("tcon "));
+    assert!(version_text.contains("tcon 1.0.0"));
 }

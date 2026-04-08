@@ -6,7 +6,7 @@ It compiles `.tcon` files (TypeScript-like DSL) into deterministic config output
 
 ## Project maturity
 
-`tcon` is in a pre-v1 production-hardening phase. Breaking changes are still allowed while we lock the v1 DSL/runtime contract.
+`tcon` is currently versioned as `v1.0.0` and includes frozen compatibility snapshots in `compat/v1/`.
 
 ## Install CLI
 
@@ -16,12 +16,23 @@ Build and install locally:
 ./scripts/install.sh
 ```
 
+On Windows PowerShell:
+
+```powershell
+./scripts/install.ps1
+```
+
 Then run directly:
 
 ```bash
 tcon --help
 tcon --version
 ```
+
+Uninstall:
+
+- macOS/Linux: `./scripts/uninstall.sh`
+- Windows: `./scripts/uninstall.ps1`
 
 ## Commands
 
@@ -78,3 +89,10 @@ export const config = sharedConfig;
 - `cargo fmt --all -- --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test --all-targets`
+
+## Release packaging
+
+Generate release archives + checksums:
+
+- macOS/Linux: `./scripts/package-release.sh 1.0.0 [targets...]`
+- Windows: `./scripts/package-release.ps1 -Version 1.0.0 [-Target ...]`
